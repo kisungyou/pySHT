@@ -1,0 +1,115 @@
+[build-system]
+requires = [
+  "scikit-build-core>=1.0",
+  "nanobind>=2.4",
+]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "pysht"
+version = "0.1.0.dev0"
+description = "Validated statistical hypothesis tests for scientific Python"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  { name = "Kisung You" },
+]
+keywords = [
+  "hypothesis-testing",
+  "statistics",
+  "high-dimensional-statistics",
+  "scientific-computing",
+]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: C++",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Scientific/Engineering :: Mathematics",
+]
+dependencies = [
+  "numpy>=2.1",
+  "scipy>=1.15",
+]
+
+[project.urls]
+Homepage = "https://github.com/kisungyou/pySHT"
+Documentation = "https://kisungyou.github.io/pySHT/"
+Source = "https://github.com/kisungyou/pySHT"
+Issues = "https://github.com/kisungyou/pySHT/issues"
+
+[project.optional-dependencies]
+test = [
+  "hypothesis>=6.120",
+  "pytest>=8.3",
+  "pytest-cov>=6.0",
+]
+dev = [
+  "build>=1.2",
+  "cibuildwheel>=2.22",
+  "mypy>=1.14",
+  "pre-commit>=4.0",
+  "ruff>=0.9",
+  "sphinx>=8.1",
+  "myst-parser>=4.0",
+  "numpydoc>=1.8",
+  "pydata-sphinx-theme>=0.16",
+  "sphinxcontrib-bibtex>=2.6",
+]
+
+[tool.scikit-build]
+minimum-version = "build-system.requires"
+build-dir = "build/{wheel_tag}"
+cmake.build-type = "Release"
+cmake.version = ">=3.26"
+wheel.packages = ["src/pysht"]
+wheel.py-api = "cp312"
+sdist.inclusion-mode = "explicit"
+sdist.include = [
+  ".gitignore",
+  "CMakeLists.txt",
+  "pyproject.toml",
+  "README.md",
+  "LICENSE",
+  "AUTHORS.md",
+  "CHANGELOG.md",
+  "cpp/core.cpp",
+  "docs/**",
+  "src/pysht/**",
+  "tests/**",
+]
+sdist.exclude = [
+  ".hypothesis/**",
+  ".mypy_cache/**",
+  ".pytest_cache/**",
+  ".ruff_cache/**",
+  ".venv/**",
+  "**/__pycache__/**",
+  "**/*.pyc",
+  "build/**",
+  "docs/_build/**",
+  "dist/**",
+  "wheelhouse/**",
+]
+
+[tool.pytest.ini_options]
+minversion = "8.3"
+addopts = ["--strict-config", "--strict-markers", "-ra"]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+
+[[tool.mypy.overrides]]
+module = ["scipy", "scipy.*"]
+ignore_missing_imports = true

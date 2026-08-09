@@ -1,0 +1,19 @@
+[run]
+branch = True
+source = pysht
+
+[report]
+fail_under = 90
+show_missing = True
+skip_covered = True
+exclude_also =
+    if TYPE_CHECKING:
+    raise AssertionError
+    raise NotImplementedError
+    if __name__ == .__main__.:
+
+[html]
+directory = build/coverage
+
+[xml]
+output = build/coverage.xml

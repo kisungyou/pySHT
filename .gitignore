@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.so
+*.dylib
+*.dll
+.DS_Store
+.coverage
+.hypothesis/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+build/
+docs/_build/
+dist/
+wheelhouse/
+_skbuild/
