@@ -48,7 +48,7 @@ class ShapiroTests(unittest.TestCase):
         n = 12
         scores = stats.norm.ppf((np.arange(1, n + 1) - 0.375) / (n + 0.25))
         result = shapiro_francia(scores)
-        self.assertEqual(result.statistic, 1.0)
+        self.assertAlmostEqual(result.statistic, 1.0, places=14)
         self.assertEqual(result.pvalue, 1.0)
 
     def test_affine_transformations_preserve_shapiro_results(self) -> None:

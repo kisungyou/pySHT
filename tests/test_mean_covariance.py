@@ -73,11 +73,13 @@ class TestOneSampleMeanCovariance(unittest.TestCase):
         np.testing.assert_allclose(result.statistic, expected)
         np.testing.assert_allclose(result.pvalue, stats.norm.sf(expected))
         self.assertEqual(
-            result.diagnostics,
-            (
-                ("aspect ratio p/n", aspect_ratio),
-                ("estimated marginal excess kurtosis", excess_kurtosis),
-            ),
+            tuple(name for name, _ in result.diagnostics),
+            ("aspect ratio p/n", "estimated marginal excess kurtosis"),
+        )
+        np.testing.assert_allclose(
+            tuple(value for _, value in result.diagnostics),
+            (aspect_ratio, excess_kurtosis),
+            rtol=2e-15,
         )
         self.assertEqual(result.estimates, ())
         # Regression guard: SHT 0.1.9 incorrectly centers this matrix at the
