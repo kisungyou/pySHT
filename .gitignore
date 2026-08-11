@@ -12,6 +12,7 @@ __pycache__/
 .venv/
 build/
 docs/_build/
+docs/generated/
 dist/
 wheelhouse/
 _skbuild/

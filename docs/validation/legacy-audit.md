@@ -30,5 +30,5 @@ and null behavior have been independently checked.
 
 Classical one- and two-sample t tests, scalar chi-square/F variance tests,
 one-way ANOVA, and Shapiro--Wilk matched trusted baseline implementations in
-the initial fixed-data probes. The t, chi-square/F variance, and ANOVA methods
-have now passed the pySHT validation gates; Shapiro--Wilk remains unimplemented.
+the initial fixed-data probes. These procedures have now passed their pySHT
+validation gates and are available in their scientific category modules.

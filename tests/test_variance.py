@@ -23,7 +23,7 @@ class OneSampleChiSquareTests(unittest.TestCase):
 
     def test_matches_literal_chi_square_formula(self) -> None:
         null_variance = 2.25
-        result = chisquare_1samp(self.x, null_variance)
+        result = chisquare_1samp(self.x, variance=null_variance)
         df = self.x.size - 1
         sample_variance = float(np.var(self.x, ddof=1))
         expected_statistic = df * sample_variance / null_variance
@@ -36,8 +36,8 @@ class OneSampleChiSquareTests(unittest.TestCase):
             ),
         )
 
-        self.assertAlmostEqual(result.statistic, expected_statistic, places=14)
-        self.assertAlmostEqual(result.pvalue, expected_pvalue, places=14)
+        np.testing.assert_allclose(result.statistic, expected_statistic, rtol=2e-14)
+        np.testing.assert_allclose(result.pvalue, expected_pvalue, rtol=2e-14)
         self.assertEqual(result.df, float(df))
         self.assertEqual(result.estimates[0][0], "sample variance")
         self.assertAlmostEqual(result.estimates[0][1], sample_variance, places=14)
@@ -61,13 +61,13 @@ class OneSampleChiSquareTests(unittest.TestCase):
         statistic = df * float(np.var(self.x, ddof=1)) / null_variance
         less = chisquare_1samp(
             self.x,
-            null_variance,
+            variance=null_variance,
             alternative="less",
             confidence_level=0.95,
         )
         greater = chisquare_1samp(
             self.x,
-            null_variance,
+            variance=null_variance,
             alternative="greater",
             confidence_level=0.95,
         )
@@ -287,6 +287,53 @@ class MultiSampleVarianceTests(unittest.TestCase):
 
 
 class VarianceValidationTests(unittest.TestCase):
+    def test_large_common_offsets_preserve_representable_spreads(self) -> None:
+        for shift in (1.0e14, 1.0e100, 1.0e308):
+            unit = float(np.spacing(shift))
+            first = shift + unit * np.array([-31.0, -9.0, -2.0, 8.0, 17.0, 29.0])
+            second = shift + unit * np.array([-24.0, -13.0, 1.0, 6.0, 19.0, 35.0])
+            third = shift + unit * np.array([-37.0, -5.0, 4.0, 12.0, 21.0, 26.0])
+            stable = tuple((sample - shift) / unit for sample in (first, second, third))
+
+            if unit <= math.sqrt(float(np.finfo(np.float64).max)):
+                chi_shifted = chisquare_1samp(first, variance=unit * unit)
+                chi_stable = chisquare_1samp(stable[0])
+                np.testing.assert_allclose(chi_shifted.statistic, chi_stable.statistic)
+                np.testing.assert_allclose(chi_shifted.pvalue, chi_stable.pvalue)
+
+            for function in (f_2samp, bartlett, levene, brown_forsythe):
+                shifted_arguments = (
+                    (first, second) if function is f_2samp else (first, second, third)
+                )
+                stable_arguments = stable[: len(shifted_arguments)]
+                with self.subTest(shift=shift, function=function.__name__):
+                    shifted_result = function(*shifted_arguments)
+                    stable_result = function(*stable_arguments)
+                    np.testing.assert_allclose(
+                        shifted_result.statistic,
+                        stable_result.statistic,
+                        rtol=2e-13,
+                        atol=5e-13,
+                    )
+                    np.testing.assert_allclose(
+                        shifted_result.pvalue,
+                        stable_result.pvalue,
+                        rtol=2e-13,
+                        atol=5e-13,
+                    )
+
+    def test_variance_ratios_retain_groups_across_the_float64_range(self) -> None:
+        tiny = 1.0e-300 * np.array([-2.0, -0.5, 0.25, 1.0])
+        huge = 1.0e300 * np.array([-1.0, -0.25, 0.5, 2.0])
+
+        result = f_2samp(tiny, huge)
+        swapped = f_2samp(huge, tiny)
+
+        self.assertEqual(result.statistic, 0.0)
+        self.assertEqual(result.pvalue, 0.0)
+        self.assertEqual(swapped.statistic, math.inf)
+        self.assertEqual(swapped.pvalue, 0.0)
+
     def test_extreme_float64_scales_remain_computable(self) -> None:
         baseline_x = np.array([-1.0, -0.5, 0.25, 1.0])
         baseline_y = np.array([-0.8, -0.1, 0.2, 0.7, 0.9])
@@ -312,10 +359,10 @@ class VarianceValidationTests(unittest.TestCase):
         sample = np.array([1.0, 2.0, 4.0])
         for variance in (0.0, -1.0):
             with self.subTest(variance=variance), self.assertRaises(ValueError):
-                chisquare_1samp(sample, variance)
+                chisquare_1samp(sample, variance=variance)
         for variance in (True, 1.0 + 2.0j, "abc"):
             with self.subTest(variance=variance), self.assertRaises(TypeError):
-                chisquare_1samp(sample, variance)
+                chisquare_1samp(sample, variance=variance)
 
         with self.assertRaises(ValueError):
             chisquare_1samp(sample, confidence_level=1.0)

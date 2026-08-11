@@ -1,9 +1,9 @@
-"""Result objects returned by statistical tests.
+"""Immutable result objects returned by statistical tests.
 
-The classes in this module deliberately separate a test's computed values from
-their presentation.  They are immutable value objects, while their string
-representation follows the compact, human-readable style of R's ``htest``
-objects.
+The result hierarchy separates computed values from presentation.  Frequentist
+tests retain an R ``htest``-style display, resampling tests add calibration
+diagnostics, and Bayes-factor procedures deliberately do not fabricate a
+frequentist p-value.
 """
 
 from __future__ import annotations
@@ -18,6 +18,9 @@ import numpy as np
 type DegreesOfFreedom = float | tuple[float, ...]
 type ConfidenceInterval = tuple[float, float]
 type NamedEstimate = tuple[str, float]
+type DiagnosticValue = bool | int | float | str
+type NamedDiagnostic = tuple[str, DiagnosticValue]
+type LogBayesFactors = tuple[float, ...] | tuple[tuple[float, ...], ...]
 
 
 def _coerce_float(value: object, *, field_name: str) -> float:
@@ -28,7 +31,7 @@ def _coerce_float(value: object, *, field_name: str) -> float:
         raise TypeError(f"{field_name} must be a real number")
     try:
         return float(cast(str | SupportsFloat | SupportsIndex, value))
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise TypeError(f"{field_name} must be a real number") from exc
 
 
@@ -68,35 +71,64 @@ def _validate_required_label(value: object, *, field_name: str) -> str:
     return result
 
 
-@dataclass(frozen=True, slots=True, kw_only=True, repr=False)
-class HypothesisTestResult:
-    """Immutable result of a frequentist hypothesis test.
+def _validate_diagnostics(
+    diagnostics: object,
+) -> tuple[NamedDiagnostic, ...]:
+    if not isinstance(diagnostics, tuple):
+        raise TypeError("diagnostics must be a tuple of (name, value) pairs")
+    validated: list[NamedDiagnostic] = []
+    seen: set[str] = set()
+    for item in diagnostics:
+        if not isinstance(item, tuple) or len(item) != 2:
+            raise TypeError("each diagnostic must be a (name, value) tuple")
+        name = _validate_required_label(item[0], field_name="diagnostic name")
+        if name in seen:
+            raise ValueError(f"duplicate diagnostic name: {name!r}")
+        raw = item[1]
+        value: DiagnosticValue
+        if isinstance(raw, (bool, np.bool_)):
+            value = bool(raw)
+        elif isinstance(raw, (int, np.integer)):
+            value = operator.index(raw)
+        elif isinstance(raw, (float, np.floating)):
+            value = float(raw)
+            if not math.isfinite(value):
+                raise ValueError("numeric diagnostics must be finite")
+        elif isinstance(raw, str):
+            value = _validate_required_label(raw, field_name=f"diagnostic {name!r}")
+        else:
+            raise TypeError(
+                "diagnostic values must be bool, int, finite float, or nonempty str"
+            )
+        validated.append((name, value))
+        seen.add(name)
+    return tuple(validated)
 
-    Parameters are keyword-only so that adding optional presentation metadata
-    does not make positional construction ambiguous.
-    """
+
+def _format_diagnostic(value: DiagnosticValue) -> str:
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, float):
+        return _format_number(value)
+    return str(value)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True, repr=False)
+class StatisticalTestResult:
+    """Immutable common presentation metadata for a statistical procedure."""
 
     statistic: float
-    pvalue: float
     method: str
     alternative: str
     data_name: str | None = None
     statistic_name: str = "statistic"
     calibration: str | None = None
-    df: DegreesOfFreedom | None = None
-    confidence_interval: ConfidenceInterval | None = None
-    confidence_level: float | None = None
-    estimates: tuple[NamedEstimate, ...] = ()
+    diagnostics: tuple[NamedDiagnostic, ...] = ()
 
     def __post_init__(self) -> None:
         statistic = _coerce_float(self.statistic, field_name="statistic")
         if math.isnan(statistic):
             raise ValueError("statistic must not be NaN")
-
-        pvalue = _coerce_float(self.pvalue, field_name="pvalue")
-        if not math.isfinite(pvalue) or not 0.0 <= pvalue <= 1.0:
-            raise ValueError("pvalue must be finite and between 0 and 1")
-
         method = _validate_required_label(self.method, field_name="method")
         alternative = _validate_required_label(
             self.alternative, field_name="alternative"
@@ -108,6 +140,60 @@ class HypothesisTestResult:
         calibration = _validate_optional_label(
             self.calibration, field_name="calibration"
         )
+        diagnostics = _validate_diagnostics(self.diagnostics)
+
+        object.__setattr__(self, "statistic", statistic)
+        object.__setattr__(self, "method", method)
+        object.__setattr__(self, "alternative", alternative)
+        object.__setattr__(self, "data_name", data_name)
+        object.__setattr__(self, "statistic_name", statistic_name)
+        object.__setattr__(self, "calibration", calibration)
+        object.__setattr__(self, "diagnostics", diagnostics)
+
+    def _statistic_line(self) -> str:
+        return f"{self.statistic_name} = {_format_number(self.statistic)}"
+
+    def _extra_lines(self) -> tuple[str, ...]:
+        if not self.diagnostics:
+            return ()
+        return ("diagnostics:",) + tuple(
+            f"{name} = {_format_diagnostic(value)}" for name, value in self.diagnostics
+        )
+
+    def _format(self) -> str:
+        body: list[str] = []
+        if self.data_name is not None:
+            body.append(f"data: {self.data_name}")
+        body.append(self._statistic_line())
+        body.append(f"alternative hypothesis: {self.alternative}")
+        if self.calibration is not None:
+            body.append(f"calibration: {self.calibration}")
+        body.extend(self._extra_lines())
+        return f"{self.method}\n\n" + "\n".join(body)
+
+    def __str__(self) -> str:
+        return self._format()
+
+    def __repr__(self) -> str:
+        return self._format()
+
+
+@dataclass(frozen=True, slots=True, kw_only=True, repr=False)
+class HypothesisTestResult(StatisticalTestResult):
+    """Immutable result of a frequentist hypothesis test."""
+
+    pvalue: float
+    df: DegreesOfFreedom | None = None
+    confidence_interval: ConfidenceInterval | None = None
+    confidence_level: float | None = None
+    estimates: tuple[NamedEstimate, ...] = ()
+
+    def __post_init__(self) -> None:
+        StatisticalTestResult.__post_init__(self)
+
+        pvalue = _coerce_float(self.pvalue, field_name="pvalue")
+        if not math.isfinite(pvalue) or not 0.0 <= pvalue <= 1.0:
+            raise ValueError("pvalue must be finite and between 0 and 1")
 
         df = self.df
         if df is not None:
@@ -166,16 +252,10 @@ class HypothesisTestResult:
             value = _coerce_float(item[1], field_name=f"estimate {name!r}")
             if not math.isfinite(value):
                 raise ValueError("estimate values must be finite")
-            seen_estimate_names.add(name)
             estimates.append((name, value))
+            seen_estimate_names.add(name)
 
-        object.__setattr__(self, "statistic", statistic)
         object.__setattr__(self, "pvalue", pvalue)
-        object.__setattr__(self, "method", method)
-        object.__setattr__(self, "alternative", alternative)
-        object.__setattr__(self, "data_name", data_name)
-        object.__setattr__(self, "statistic_name", statistic_name)
-        object.__setattr__(self, "calibration", calibration)
         object.__setattr__(self, "df", df)
         object.__setattr__(self, "confidence_interval", confidence_interval)
         object.__setattr__(self, "confidence_level", confidence_level)
@@ -208,40 +288,29 @@ class HypothesisTestResult:
             lines += tuple(
                 f"{name} = {_format_number(value)}" for name, value in self.estimates
             )
-        return lines
-
-    def _format(self) -> str:
-        body: list[str] = []
-        if self.data_name is not None:
-            body.append(f"data: {self.data_name}")
-        body.append(self._statistic_line())
-        body.append(f"alternative hypothesis: {self.alternative}")
-        if self.calibration is not None:
-            body.append(f"calibration: {self.calibration}")
-        body.extend(self._extra_lines())
-        return f"{self.method}\n\n" + "\n".join(body)
-
-    def __str__(self) -> str:
-        return self._format()
-
-    def __repr__(self) -> str:
-        return self._format()
+        return lines + StatisticalTestResult._extra_lines(self)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True, repr=False)
 class ResamplingTestResult(HypothesisTestResult):
-    """Immutable test result with Monte Carlo or permutation diagnostics."""
+    """Immutable result with exact or Monte Carlo resampling diagnostics.
+
+    Monte Carlo results use a fixed 95 percent binomial interval.  The field
+    therefore has no independently mutable confidence-level parameter.
+    """
 
     n_resamples: int
     exceedances: int
+    exact: bool = False
     monte_carlo_standard_error: float | None = None
+    tail_probability_interval: ConfidenceInterval | None = None
 
     def __post_init__(self) -> None:
         HypothesisTestResult.__post_init__(self)
 
-        if isinstance(self.n_resamples, bool):
+        if isinstance(self.n_resamples, (bool, np.bool_)):
             raise TypeError("n_resamples must be an integer, not bool")
-        if isinstance(self.exceedances, bool):
+        if isinstance(self.exceedances, (bool, np.bool_)):
             raise TypeError("exceedances must be an integer, not bool")
         try:
             n_resamples = operator.index(self.n_resamples)
@@ -251,11 +320,13 @@ class ResamplingTestResult(HypothesisTestResult):
             exceedances = operator.index(self.exceedances)
         except TypeError as exc:
             raise TypeError("exceedances must be an integer") from exc
-
         if n_resamples <= 0:
             raise ValueError("n_resamples must be greater than 0")
         if not 0 <= exceedances <= n_resamples:
             raise ValueError("exceedances must be between 0 and n_resamples")
+        if not isinstance(self.exact, (bool, np.bool_)):
+            raise TypeError("exact must be a boolean")
+        exact = bool(self.exact)
 
         standard_error = self.monte_carlo_standard_error
         if standard_error is not None:
@@ -267,27 +338,97 @@ class ResamplingTestResult(HypothesisTestResult):
                     "monte_carlo_standard_error must be finite and non-negative"
                 )
 
+        interval = self.tail_probability_interval
+        if interval is not None:
+            if not isinstance(interval, tuple) or len(interval) != 2:
+                raise TypeError(
+                    "tail_probability_interval must be a (lower, upper) tuple"
+                )
+            lower = _coerce_float(interval[0], field_name="tail_probability_interval")
+            upper = _coerce_float(interval[1], field_name="tail_probability_interval")
+            if not 0.0 <= lower <= upper <= 1.0:
+                raise ValueError("tail_probability_interval must lie between 0 and 1")
+            interval = (lower, upper)
+
+        if exact:
+            from ._resampling import exact_pvalue
+
+            expected_pvalue = exact_pvalue(exceedances, n_resamples)
+            if standard_error is not None or interval is not None:
+                raise ValueError(
+                    "an exact result must not have Monte Carlo uncertainty metadata"
+                )
+        else:
+            if standard_error is None or interval is None:
+                raise ValueError(
+                    "a Monte Carlo result requires its standard error and "
+                    "95 percent tail-probability interval"
+                )
+            # Import locally so the base result hierarchy does not load SciPy
+            # until a resampling result is actually validated.
+            from ._resampling import monte_carlo_calibration
+
+            expected_pvalue, expected_standard_error, expected_interval = (
+                monte_carlo_calibration(exceedances, n_resamples)
+            )
+            if standard_error != expected_standard_error:
+                raise ValueError(
+                    "monte_carlo_standard_error is inconsistent with the "
+                    "resampling counts"
+                )
+            if interval != expected_interval:
+                raise ValueError(
+                    "tail_probability_interval is inconsistent with the "
+                    "resampling counts"
+                )
+        # These values are deterministic functions of the integer counts.
+        # Approximate comparisons are unsafe here: an absolute tolerance can
+        # accept p=0 for a positive exact tail, while a relative tolerance can
+        # admit increasingly large discrepancies as a diagnostic grows.
+        if self.pvalue != expected_pvalue:
+            raise ValueError("pvalue is inconsistent with the resampling counts")
+
         object.__setattr__(self, "n_resamples", n_resamples)
         object.__setattr__(self, "exceedances", exceedances)
+        object.__setattr__(self, "exact", exact)
         object.__setattr__(self, "monte_carlo_standard_error", standard_error)
+        object.__setattr__(self, "tail_probability_interval", interval)
 
     def _extra_lines(self) -> tuple[str, ...]:
-        exceedance_label = "exceedance" if self.exceedances == 1 else "exceedances"
-        lines: tuple[str, ...] = HypothesisTestResult._extra_lines(self) + (
-            (
-                "resampling: "
-                f"{self.n_resamples:,} resamples, "
-                f"{self.exceedances:,} {exceedance_label}"
-            ),
-        )
-        if self.monte_carlo_standard_error is not None:
-            lines += (
+        base = HypothesisTestResult._extra_lines(self)
+        if self.exact:
+            lines: tuple[str, ...] = (
                 (
-                    "Monte Carlo standard error: "
-                    f"{_format_number(self.monte_carlo_standard_error)}"
+                    "enumeration: "
+                    f"{self.n_resamples:,} labelings, "
+                    f"{self.exceedances:,} at least as extreme"
                 ),
             )
-        return lines
+        else:
+            exceedance_label = "exceedance" if self.exceedances == 1 else "exceedances"
+            lines = (
+                (
+                    "resampling: "
+                    f"{self.n_resamples:,} resamples, "
+                    f"{self.exceedances:,} {exceedance_label}"
+                ),
+            )
+            if self.monte_carlo_standard_error is not None:
+                lines += (
+                    (
+                        "Monte Carlo standard error: "
+                        f"{_format_number(self.monte_carlo_standard_error)}"
+                    ),
+                )
+            if self.tail_probability_interval is not None:
+                lower, upper = self.tail_probability_interval
+                lines += (
+                    (
+                        "95 percent tail-probability interval: "
+                        f"{_format_number(lower)} {_format_number(upper)}"
+                    ),
+                )
+        return base + lines
 
 
 @dataclass(frozen=True, slots=True, kw_only=True, repr=False)
@@ -296,7 +437,6 @@ class DistanceTestResult(ResamplingTestResult):
 
     normalized_statistic: float
     distance_scale: float
-    exact: bool = False
 
     def __post_init__(self) -> None:
         ResamplingTestResult.__post_init__(self)
@@ -308,37 +448,11 @@ class DistanceTestResult(ResamplingTestResult):
         distance_scale = _coerce_float(self.distance_scale, field_name="distance_scale")
         if math.isnan(distance_scale) or distance_scale < 0.0:
             raise ValueError("distance_scale must be non-negative and not NaN")
-        if not isinstance(self.exact, (bool, np.bool_)):
-            raise TypeError("exact must be a boolean")
-        exact = bool(self.exact)
-        if exact:
-            expected_pvalue = self.exceedances / self.n_resamples
-            if self.monte_carlo_standard_error is not None:
-                raise ValueError(
-                    "an exact result must not have a Monte Carlo standard error"
-                )
-        else:
-            expected_pvalue = (self.exceedances + 1.0) / (self.n_resamples + 1.0)
-        if not math.isclose(self.pvalue, expected_pvalue, rel_tol=0.0, abs_tol=1e-15):
-            raise ValueError(
-                "pvalue is inconsistent with the permutation exceedance count"
-            )
         object.__setattr__(self, "normalized_statistic", normalized_statistic)
         object.__setattr__(self, "distance_scale", distance_scale)
-        object.__setattr__(self, "exact", exact)
 
     def _extra_lines(self) -> tuple[str, ...]:
-        if self.exact:
-            lines = HypothesisTestResult._extra_lines(self) + (
-                (
-                    "enumeration: "
-                    f"{self.n_resamples:,} labelings, "
-                    f"{self.exceedances:,} at least as extreme"
-                ),
-            )
-        else:
-            lines = ResamplingTestResult._extra_lines(self)
-        return lines + (
+        return ResamplingTestResult._extra_lines(self) + (
             (
                 "numerical normalization: "
                 f"T_mn / d_max^2 = {_format_number(self.normalized_statistic)}, "
@@ -347,4 +461,75 @@ class DistanceTestResult(ResamplingTestResult):
         )
 
 
-__all__ = ["DistanceTestResult", "HypothesisTestResult", "ResamplingTestResult"]
+def _validate_log_bayes_factors(value: object) -> LogBayesFactors:
+    if not isinstance(value, tuple) or not value:
+        raise TypeError("component_log_bayes_factors must be a nonempty tuple")
+    if all(not isinstance(item, tuple) for item in value):
+        flat: list[float] = []
+        for item in value:
+            number = _coerce_float(item, field_name="component_log_bayes_factors")
+            if math.isnan(number):
+                raise ValueError("component log Bayes factors must not be NaN")
+            flat.append(number)
+        return tuple(flat)
+    if not all(isinstance(item, tuple) for item in value):
+        raise TypeError("component log Bayes factors must be uniformly nested")
+    rows: list[tuple[float, ...]] = []
+    width: int | None = None
+    for raw_row in value:
+        assert isinstance(raw_row, tuple)
+        if not raw_row:
+            raise ValueError("component log Bayes factor rows must not be empty")
+        row = tuple(
+            _coerce_float(item, field_name="component_log_bayes_factors")
+            for item in raw_row
+        )
+        if any(math.isnan(item) for item in row):
+            raise ValueError("component log Bayes factors must not be NaN")
+        if width is None:
+            width = len(row)
+        elif len(row) != width:
+            raise ValueError("component log Bayes factor rows must have equal length")
+        rows.append(row)
+    return tuple(rows)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True, repr=False)
+class BayesFactorTestResult(StatisticalTestResult):
+    """Immutable result for a Bayes-factor procedure with no p-value."""
+
+    component_log_bayes_factors: LogBayesFactors
+
+    def __post_init__(self) -> None:
+        StatisticalTestResult.__post_init__(self)
+        components = _validate_log_bayes_factors(self.component_log_bayes_factors)
+        flat = (
+            tuple(item for row in components for item in row)
+            if components and isinstance(components[0], tuple)
+            else cast(tuple[float, ...], components)
+        )
+        expected = max(flat)
+        if self.statistic != expected:
+            raise ValueError(
+                "statistic must equal the maximum component log Bayes factor"
+            )
+        object.__setattr__(self, "component_log_bayes_factors", components)
+
+    @property
+    def max_log_bayes_factor(self) -> float:
+        """The largest component log Bayes factor."""
+        return self.statistic
+
+    def _extra_lines(self) -> tuple[str, ...]:
+        return (
+            "frequentist p-value: not defined",
+        ) + StatisticalTestResult._extra_lines(self)
+
+
+__all__ = [
+    "BayesFactorTestResult",
+    "DistanceTestResult",
+    "HypothesisTestResult",
+    "ResamplingTestResult",
+    "StatisticalTestResult",
+]

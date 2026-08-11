@@ -9,17 +9,18 @@ therefore not used as a correctness oracle here.
 from __future__ import annotations
 
 import math
-import operator
 from itertools import combinations
-from typing import Final, SupportsIndex, cast
+from typing import Final
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from . import _core
+from ._resampling import monte_carlo_calibration
 from ._results import DistanceTestResult
+from ._validation import make_generator, validate_choice, validate_positive_integer
 
-__all__ = ["biswas_ghosh_2samp"]
+__all__ = ["bg_2samp"]
 
 
 _METHOD: Final = "Biswas-Ghosh two-sample test (2014)"
@@ -53,33 +54,6 @@ def _validate_sample(sample: ArrayLike, *, name: str) -> NDArray[np.float64]:
         values = values.copy()
         values[values == 0.0] = 0.0
     return values
-
-
-def _validate_positive_integer(value: object, *, name: str) -> int:
-    if isinstance(value, (bool, np.bool_)):
-        raise TypeError(f"{name} must be an integer, not bool")
-    try:
-        result = operator.index(cast(SupportsIndex, value))
-    except TypeError as exc:
-        raise TypeError(f"{name} must be an integer") from exc
-    if result <= 0:
-        raise ValueError(f"{name} must be greater than 0")
-    return result
-
-
-def _make_generator(
-    rng: int | np.integer | np.random.Generator | None,
-) -> np.random.Generator:
-    if isinstance(rng, np.random.Generator):
-        return rng
-    if rng is not None and (
-        isinstance(rng, (bool, np.bool_)) or not isinstance(rng, (int, np.integer))
-    ):
-        raise TypeError("rng must be None, an integer seed, or a NumPy Generator")
-    try:
-        return np.random.default_rng(rng)
-    except ValueError as exc:
-        raise ValueError("rng integer seed is outside the supported range") from exc
 
 
 def _sort_rows(values: NDArray[np.float64]) -> NDArray[np.float64]:
@@ -198,14 +172,13 @@ def _statistic(
     return statistic
 
 
-def biswas_ghosh_2samp(
+def bg_2samp(
     x: ArrayLike,
     y: ArrayLike,
     *,
     calibration: str = "permutation",
     n_resamples: int = 9_999,
     rng: int | np.integer | np.random.Generator | None = None,
-    n_jobs: int = 1,
 ) -> DistanceTestResult:
     """Test whether two univariate or multivariate distributions are equal.
 
@@ -226,8 +199,8 @@ def biswas_ghosh_2samp(
         ``"permutation"`` (the default) automatically enumerates all labelings
         when their count does not exceed ``n_resamples`` and otherwise uses
         Monte Carlo permutations. Use ``"exact"`` to require enumeration or
-        ``"monte-carlo"`` to require sampling. The legacy asymptotic variance
-        calculation is deliberately unavailable because it is not row-order
+        ``"monte-carlo"`` to require sampling. No asymptotic selector is
+        exposed because the legacy variance calculation is not row-order
         invariant.
     n_resamples
         Monte Carlo sample size and computational budget for exact enumeration.
@@ -235,9 +208,6 @@ def biswas_ghosh_2samp(
     rng
         ``None``, an integer seed, or a :class:`numpy.random.Generator`. Exact
         enumeration validates but does not consume the generator.
-    n_jobs
-        Reserved for parallel resampling. Only ``1`` is currently supported.
-
     Returns
     -------
     DistanceTestResult
@@ -257,9 +227,10 @@ def biswas_ghosh_2samp(
     while the normalized calibration remains valid. Numerically tied
     permutation statistics are included in the upper tail using a relative
     tolerance of 100 double-precision epsilons. For Monte Carlo calibration,
-    the reported standard error is the plug-in value
-    ``sqrt(B * pvalue * (1 - pvalue)) / (B + 1)`` for the corrected estimator
-    ``(exceedances + 1) / (B + 1)``.
+    the reported standard error estimates the conditional standard deviation
+    of the corrected estimator using ``q_hat = exceedances / B``. A 95 percent
+    Clopper--Pearson interval records uncertainty in the underlying permutation
+    tail probability.
 
     References
     ----------
@@ -267,24 +238,12 @@ def biswas_ghosh_2samp(
     applicable to high dimensional data. *Journal of Multivariate Analysis*,
     123, 160-171. https://doi.org/10.1016/j.jmva.2013.09.004
     """
-    if not isinstance(calibration, str):
-        raise TypeError("calibration must be a string")
-    normalized_calibration = calibration.strip().lower().replace("_", "-")
-    if normalized_calibration == "asymptotic":
-        raise NotImplementedError(
-            "asymptotic calibration is unavailable until its variance "
-            "estimator has an independently verified implementation"
-        )
-    supported_calibrations = {"permutation", "exact", "monte-carlo"}
-    if normalized_calibration not in supported_calibrations:
-        raise ValueError("calibration must be 'permutation', 'exact', or 'monte-carlo'")
-
-    resamples = _validate_positive_integer(n_resamples, name="n_resamples")
-    jobs = _validate_positive_integer(n_jobs, name="n_jobs")
-    if jobs != 1:
-        raise NotImplementedError(
-            "parallel resampling is not yet implemented; use n_jobs=1"
-        )
+    normalized_calibration = validate_choice(
+        calibration,
+        name="calibration",
+        choices=("permutation", "exact", "monte-carlo"),
+    )
+    resamples = validate_positive_integer(n_resamples, name="n_resamples")
 
     first = _validate_sample(x, name="x")
     second = _validate_sample(y, name="y")
@@ -300,7 +259,7 @@ def biswas_ghosh_2samp(
     observed_normalized = _statistic(distances, observed_first, observed_second)
     observed_raw = _restore_raw_statistic(observed_normalized, distance_scale)
 
-    generator = _make_generator(rng)
+    generator = make_generator(rng)
     pooled_size = pooled.shape[0]
     first_size = first.shape[0]
     total_labelings = math.comb(pooled_size, first_size)
@@ -326,6 +285,7 @@ def biswas_ghosh_2samp(
         effective_resamples = total_labelings
         pvalue = exceedances / total_labelings
         monte_carlo_standard_error = None
+        tail_probability_interval = None
         calibration_label = "exact permutation"
     else:
         for _ in range(resamples):
@@ -338,9 +298,13 @@ def biswas_ghosh_2samp(
             )
             exceedances += int(_is_at_least_as_extreme(permuted, observed_normalized))
         effective_resamples = resamples
-        pvalue = (exceedances + 1.0) / (resamples + 1.0)
-        monte_carlo_standard_error = math.sqrt(resamples * pvalue * (1.0 - pvalue)) / (
-            resamples + 1.0
+        (
+            pvalue,
+            monte_carlo_standard_error,
+            tail_probability_interval,
+        ) = monte_carlo_calibration(
+            exceedances,
+            resamples,
         )
         calibration_label = "Monte Carlo permutation"
 
@@ -358,4 +322,5 @@ def biswas_ghosh_2samp(
         n_resamples=effective_resamples,
         exceedances=exceedances,
         monte_carlo_standard_error=monte_carlo_standard_error,
+        tail_probability_interval=tail_probability_interval,
     )

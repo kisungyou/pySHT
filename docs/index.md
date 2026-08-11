@@ -1,43 +1,70 @@
-# pySHT
+---
+html_theme.sidebar_primary.remove: true
+html_theme.sidebar_secondary.remove: true
+description: Statistical hypothesis testing for Python.
+---
 
-pySHT provides independently validated statistical hypothesis tests for
-NumPy and SciPy workflows. Its result objects are immutable and display the
-key inferential quantities in the concise style of an R `htest` object.
+{.document-title}
+# pySHT: statistical hypothesis testing
+
+```{image} _static/og.png
+:alt: pySHT with two probability distributions and a vertical test threshold
+:class: pysht-home-figure
+:align: center
+```
+
+::::{div} home-introduction
+pySHT is a Python library for statistical hypothesis testing. It provides
+literature-traceable implementations for mean, variance, covariance,
+joint-parameter, distributional, goodness-of-fit, and structured-domain
+questions, with a consistent result contract across methods.
+
+The package is an extended and independently audited successor to
+[SHT for R](https://github.com/kisungyou/SHT). Start with the
+[installation guide](getting-started.md), read the [user guide](user-guide/index.md),
+or go directly to the [API reference](api/index.md).
+::::
+
+::::{div} home-status
+**Version 0.1.0.** This initial public release is correctness-gated and fully
+documented. The API may still evolve before version 1.0.
+::::
+
+## Contents
+
+- [Getting started](getting-started.md) — install pySHT and run a first test.
+- [User guide](user-guide/index.md) — choose a procedure, prepare data, and
+  interpret the result.
+- [API reference](api/index.md) — inspect every public function and result type.
+- [Validation](validation/index.md) — review formulas, numerical checks, and
+  independent comparisons.
+- [Project](project/index.md) — see the roadmap, migration notes, and
+  contribution guidance.
+
+## API categories
+
+- **[1] Univariate Mean** — [API](api/univariate-mean.md)
+- **[2] Multivariate Mean** — [API](api/multivariate-mean.md)
+- **[3] Variance** — [API](api/variance.md)
+- **[4] Covariance** — [API](api/covariance.md)
+- **[5] Mean and Variance** — [API](api/mean-variance.md)
+- **[6] Mean and Covariance** — [API](api/mean-covariance.md)
+- **[7] Equality of Distributions** — [API](api/equaldist.md)
+- **[8] Normality** — [API](api/normality.md)
+- **[9] Rectangular Uniformity** — [API](api/uniformity.md)
+- **[10] Special Domains** — [API](api/simplex.md)
+
+The numbering and scientific organization follow SHT 0.1.9. The public pySHT
+API has 51 canonical functions covering 52 of its 54 statistical routine
+identities. The [migration crosswalk](migration/from-r.md) explains the one
+shared implementation, the validation-blocked mean CLX and Fisher identities,
+and the two R-only adapters.
 
 ```{toctree}
 :hidden:
 :maxdepth: 2
 
-getting-started
-api/index
-validation/index
+Getting started <getting-started>
+User guide <user-guide/index>
+API <api/index>
 ```
-
-## Current scope
-
-- equality of two univariate or multivariate distributions;
-- classical univariate and multivariate tests for population means;
-- one-, two-, and multi-sample tests for population variances;
-- a C++17/nanobind foundation for computational kernels.
-
-Every port is treated as a new statistical implementation: legacy code is
-audited, numerical behavior is tested, and unverified calibration formulas
-are not exposed. See the [validation ledgers](validation/index.md) for the
-findings and independent checks that guide this work.
-
-## Quick example
-
-```python
-import numpy as np
-
-from pysht.mean import ttest_1samp
-
-x = np.array([1.2, 0.8, 1.4, 1.1, 0.9])
-result = ttest_1samp(x, popmean=0.0)
-
-print(result)
-print(result.statistic, result.pvalue)
-```
-
-Begin with [installation and basic usage](getting-started.md), or go directly
-to the [API reference](api/index.md).

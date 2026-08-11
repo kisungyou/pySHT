@@ -1,9 +1,13 @@
 # Getting started
 
+This guide takes you from installation to a result you can inspect, print,
+interpret, and use programmatically. If you are unsure which procedure matches
+your question and sampling design, start with the
+[test chooser](user-guide/choose-a-test.md).
+
 ## Installation
 
-pySHT currently requires Python 3.12 or newer. Once release wheels are
-available, install it from PyPI with:
+pySHT requires Python 3.12 or newer. Install the current release from PyPI:
 
 ```console
 python -m pip install pysht
@@ -16,43 +20,85 @@ required:
 python -m pip install -e ".[test]"
 ```
 
+## Run a first test
+
+```python
+from pysht.mean import ttest_1samp
+
+x = [2.1, 2.4, 1.9, 2.2, 2.5]
+result = ttest_1samp(x, popmean=2.0)
+
+print(result)
+```
+
+The printed summary contains the method, data label, statistic, degrees of
+freedom, p-value, alternative hypothesis, calibration, confidence interval,
+and estimate when those quantities apply. pySHT uses the same display contract
+across its scientific modules; the exact fields depend on the procedure.
+
+Before interpreting the p-value, confirm that the procedure, alternative, and
+assumptions match the scientific question. See the
+[data and assumptions guide](user-guide/data-assumptions.md).
+
 ## Result objects
 
-Every test returns an immutable result rather than printing as a side effect.
-The object supports both programmatic access and a human-readable display:
+Every test returns an immutable `StatisticalTestResult` subtype rather than
+printing as a side effect. A frequentist result supports both programmatic
+access and a human-readable display:
 
 ```python
 from pysht.mean import ttest_1samp
 
 result = ttest_1samp([2.1, 2.4, 1.9, 2.2, 2.5], popmean=2.0)
 
-print(result)          # R htest-style summary
-result.statistic       # test statistic
-result.pvalue          # p-value
-result.alternative     # alternative hypothesis
-result.method          # method name
+print(result)  # R htest-style summary
+result.statistic  # test statistic
+result.pvalue  # p-value
+result.alternative  # alternative hypothesis
+result.method  # method name
 ```
 
-Additional fields, such as degrees of freedom, confidence intervals,
-estimates, resampling diagnostics, and distance normalization metadata, are
-present when the procedure computes them. Result instances are frozen data
-classes, so attempts to mutate a field raise an error.
+Additional fields, such as degrees of freedom, confidence intervals, estimates,
+named diagnostics, and calibration metadata, are present when the procedure
+computes them. Exact and Monte Carlo results also record simulation counts and
+tail uncertainty. The two Lee--You--Lin procedures return maximum and component
+log Bayes factors with no `pvalue`; they do not fabricate a frequentist
+decision. Result instances are frozen data classes, so attempts to mutate a
+field raise an error.
 
-## Reproducible resampling
+Use `repr(result)` for a compact developer-facing representation and
+`print(result)` for the statistical report.
 
-Pass an integer seed to a resampling procedure when reproducibility matters:
+## Interpret the result
 
-```python
-from pysht.equaldist import biswas_ghosh_2samp
+Treat the printed output as a compact report, not as a decision made by the
+library. A p-value is calculated under the stated null model and calibration;
+it is not the probability that the null hypothesis is true. pySHT therefore
+does not add a `reject` field. Set the significance level before analysis and
+report an estimate and confidence interval when the procedure provides them.
 
-result = biswas_ghosh_2samp(
-    [[0.0, 0.2], [0.3, 0.1], [0.1, 0.4]],
-    [[1.0, 1.2], [0.8, 1.1], [1.2, 0.9]],
-    n_resamples=999,
-    rng=42,
-)
-```
+The [test-results guide](user-guide/results.md) explains each printed section
+and the common structured fields. For exact signatures and parameter defaults,
+use the category pages in the [API reference](api/index.md), beginning with
+[univariate mean tests](api/univariate-mean.md) for the function above.
 
-The equality-of-distributions test uses exact enumeration when the requested
-budget covers every distinct labeling; otherwise it uses the corrected Monte
-Carlo permutation p-value.
+## Preserve the analysis
+
+Record the data provenance, preprocessing, fully qualified function name, all
+non-default arguments, software versions, and returned result. If a procedure
+uses resampling, random projections, random subspaces, or numerical
+optimization, also record its calibration mode, budget, random-number policy,
+and convergence controls.
+See [reproducible inference](user-guide/reproducibility.md) for a complete
+checklist.
+
+## Where to go next
+
+- [Choose a test](user-guide/choose-a-test.md) from the scientific question.
+- [Understand result objects](user-guide/results.md) and their interpretation.
+- Inspect the complete [API reference](api/index.md), organized in SHT's
+  `[0]`--`[10]` category order.
+- Use the [R migration crosswalk](migration/from-r.md) to translate an SHT
+  routine into its lowercase Python name.
+- Read the [validation center](validation/index.md) before relying on a method
+  in a sensitive workflow.

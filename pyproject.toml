@@ -7,12 +7,12 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "pysht"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "Validated statistical hypothesis tests for scientific Python"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "THIRD_PARTY_LICENSES.md"]
 authors = [
   { name = "Kisung You" },
 ]
@@ -23,7 +23,7 @@ keywords = [
   "scientific-computing",
 ]
 classifiers = [
-  "Development Status :: 2 - Pre-Alpha",
+  "Development Status :: 3 - Alpha",
   "Intended Audience :: Science/Research",
   "Programming Language :: C++",
   "Programming Language :: Python :: 3",
@@ -31,6 +31,7 @@ classifiers = [
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
   "Topic :: Scientific/Engineering :: Mathematics",
+  "Typing :: Typed",
 ]
 dependencies = [
   "numpy>=2.1",
@@ -38,16 +39,25 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/kisungyou/pySHT"
-Documentation = "https://kisungyou.github.io/pySHT/"
+Homepage = "https://kisungyou.com/pysht/"
+Documentation = "https://kisungyou.com/pysht/"
 Source = "https://github.com/kisungyou/pySHT"
 Issues = "https://github.com/kisungyou/pySHT/issues"
 
 [project.optional-dependencies]
 test = [
-  "hypothesis>=6.120",
   "pytest>=8.3",
   "pytest-cov>=6.0",
+]
+docs = [
+  "sphinx>=9.1",
+  "myst-parser>=5.1",
+  "numpydoc>=1.10",
+  "pydata-sphinx-theme>=0.20",
+  "sphinxcontrib-bibtex>=2.7",
+  "sphinx-design>=0.6",
+  "sphinx-copybutton>=0.5",
+  "sphinxext-opengraph>=0.10",
 ]
 dev = [
   "build>=1.2",
@@ -55,11 +65,14 @@ dev = [
   "mypy>=1.14",
   "pre-commit>=4.0",
   "ruff>=0.9",
-  "sphinx>=8.1",
-  "myst-parser>=4.0",
-  "numpydoc>=1.8",
-  "pydata-sphinx-theme>=0.16",
-  "sphinxcontrib-bibtex>=2.6",
+  "sphinx>=9.1",
+  "myst-parser>=5.1",
+  "numpydoc>=1.10",
+  "pydata-sphinx-theme>=0.20",
+  "sphinxcontrib-bibtex>=2.7",
+  "sphinx-design>=0.6",
+  "sphinx-copybutton>=0.5",
+  "sphinxext-opengraph>=0.10",
 ]
 
 [tool.scikit-build]
@@ -76,12 +89,14 @@ sdist.include = [
   "pyproject.toml",
   "README.md",
   "LICENSE",
+  "THIRD_PARTY_LICENSES.md",
   "AUTHORS.md",
   "CHANGELOG.md",
   "cpp/core.cpp",
   "docs/**",
   "src/pysht/**",
   "tests/**",
+  "tools/**",
 ]
 sdist.exclude = [
   ".hypothesis/**",

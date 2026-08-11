@@ -1,0 +1,318 @@
+/* A quiet, documentation-first layer over PyData Sphinx Theme. */
+
+:root,
+html[data-theme="light"] {
+  --pysht-ink: #30334f;
+  --pysht-muted: #62677c;
+  --pysht-blue: #46658a;
+  --pysht-teal: #198f98;
+  --pysht-border: #dfe2e8;
+  --pysht-surface: #ffffff;
+  --pysht-soft: #f7f8fa;
+  --pysht-code: #f3f5f7;
+
+  --pst-color-primary: var(--pysht-blue);
+  --pst-color-secondary: var(--pysht-teal);
+  --pst-color-link: #3c638b;
+  --pst-color-link-hover: #24496e;
+}
+
+html[data-theme="dark"] {
+  --pysht-ink: #e7e8ef;
+  --pysht-muted: #b9bdca;
+  --pysht-blue: #91b6d8;
+  --pysht-teal: #67c7cc;
+  --pysht-border: #3b3f4d;
+  --pysht-surface: #20222a;
+  --pysht-soft: #272a33;
+  --pysht-code: #292c35;
+
+  --pst-color-primary: var(--pysht-blue);
+  --pst-color-secondary: var(--pysht-teal);
+  --pst-color-link: #9dc7e8;
+  --pst-color-link-hover: #c2dff2;
+}
+
+body {
+  color: var(--pysht-ink);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial,
+    sans-serif;
+  font-size: 1rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.65;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--pysht-teal) 24%, transparent);
+}
+
+:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--pysht-teal) 70%, white);
+  outline-offset: 3px;
+}
+
+/* Header and navigation */
+
+.bd-header {
+  min-height: 4.25rem;
+  border-bottom: 1px solid var(--pysht-border);
+  background: color-mix(in srgb, var(--pysht-surface) 96%, transparent);
+  box-shadow: 0 2px 8px rgb(31 35 48 / 7%);
+}
+
+.bd-header .navbar-header-items,
+.bd-header .navbar-header-items__center,
+.bd-header .navbar-header-items__end {
+  min-height: 4.25rem;
+}
+
+.navbar-brand.logo {
+  font-weight: 500;
+  letter-spacing: -0.035em;
+}
+
+.navbar-brand .logo__title {
+  color: var(--pysht-ink);
+  font-size: 1.75rem;
+}
+
+.bd-header .nav-link {
+  color: var(--pysht-muted);
+  font-size: 0.98rem;
+  font-weight: 450;
+}
+
+.bd-header .nav-link:hover,
+.bd-header .nav-link:focus-visible,
+.bd-header .nav-link.active {
+  color: var(--pysht-blue);
+}
+
+.search-button-field {
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.bd-main .bd-content .bd-article-container {
+  max-width: 76rem;
+}
+
+.bd-main .bd-content .bd-article {
+  padding-bottom: 4rem;
+}
+
+.bd-sidebar-primary,
+.bd-sidebar-secondary {
+  font-size: 0.92rem;
+}
+
+.bd-footer {
+  border-top: 1px solid var(--pysht-border);
+  background: var(--pysht-soft);
+}
+
+/* Reading typography */
+
+.bd-article h1,
+.bd-article h2,
+.bd-article h3,
+.bd-article h4 {
+  color: var(--pysht-ink);
+  font-weight: 500;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+
+.bd-article h1 {
+  margin-bottom: 1.4rem;
+  font-size: clamp(2.25rem, 5vw, 3.35rem);
+}
+
+.bd-article h2 {
+  margin-top: 2.75rem;
+  font-size: clamp(1.45rem, 3vw, 1.9rem);
+}
+
+.bd-article h3 {
+  margin-top: 2rem;
+  font-size: 1.25rem;
+}
+
+.bd-article p,
+.bd-article li {
+  max-width: 78ch;
+}
+
+.bd-article a:not(.headerlink):not(.btn) {
+  text-decoration-color: color-mix(in srgb, currentColor 38%, transparent);
+  text-decoration-thickness: 0.07em;
+  text-underline-offset: 0.14em;
+}
+
+.bd-article a:not(.headerlink):not(.btn):hover {
+  text-decoration-color: currentColor;
+}
+
+hr {
+  margin-block: 2.5rem;
+  border-color: var(--pysht-border);
+  opacity: 1;
+}
+
+/* Homepage */
+
+img.pysht-home-figure {
+  display: block;
+  width: min(100%, 62rem);
+  height: auto;
+  margin: 1.1rem 0 2rem;
+  border-radius: 0.2rem;
+}
+
+.home-introduction {
+  max-width: 74ch;
+  margin-bottom: 1.8rem;
+  color: var(--pysht-muted);
+  font-size: 1.12rem;
+  line-height: 1.75;
+}
+
+.home-introduction p {
+  margin-bottom: 0.8rem;
+}
+
+.home-status {
+  max-width: 74ch;
+  margin: -0.2rem 0 2.25rem;
+  color: var(--pysht-muted);
+  font-size: 0.9rem;
+}
+
+/* Keep existing documentation cards restrained. */
+
+.sd-card,
+.status-card,
+.feature-card,
+.method-card,
+.validation-card {
+  border: 1px solid var(--pysht-border) !important;
+  border-radius: 0.25rem !important;
+  background: var(--pysht-surface) !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+.sd-card:hover,
+.status-card:hover,
+.feature-card:hover,
+.method-card:hover,
+.validation-card:hover {
+  border-color: color-mix(in srgb, var(--pysht-blue) 55%, var(--pysht-border)) !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+.feature-card::before,
+.method-card::before,
+.validation-card::before,
+.status-card::after {
+  display: none;
+}
+
+.status-available,
+.status-audit {
+  display: inline-block;
+  padding: 0.12rem 0.42rem;
+  font-size: 0.76rem;
+  font-weight: 600;
+  border: 1px solid var(--pysht-border);
+  border-radius: 0.2rem;
+}
+
+.status-available {
+  color: #277b69;
+  background: color-mix(in srgb, #6dc7b2 12%, var(--pysht-surface));
+}
+
+.status-audit {
+  color: #96651f;
+  background: color-mix(in srgb, #dba857 13%, var(--pysht-surface));
+}
+
+/* Tables, code, and API signatures */
+
+.bd-article table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.94rem;
+}
+
+.bd-article th {
+  color: var(--pysht-ink);
+  font-weight: 600;
+  background: var(--pysht-soft);
+}
+
+.bd-article th,
+.bd-article td {
+  padding: 0.65rem 0.75rem;
+  border-color: var(--pysht-border);
+}
+
+code {
+  border: 1px solid color-mix(in srgb, var(--pysht-border) 75%, transparent);
+  border-radius: 0.18rem;
+  background: var(--pysht-code);
+}
+
+pre,
+.highlight pre {
+  border: 1px solid var(--pysht-border);
+  border-radius: 0.25rem;
+  background: var(--pysht-code);
+  box-shadow: none;
+}
+
+.sig,
+dl.py > dt {
+  border: 1px solid var(--pysht-border);
+  border-radius: 0.2rem;
+  background: var(--pysht-soft);
+}
+
+.rubric,
+.field-list > dt,
+.sig-name,
+.property {
+  color: var(--pysht-blue);
+}
+
+@media (max-width: 767px) {
+  .bd-article h1 {
+    font-size: 2.15rem;
+  }
+
+  img.pysht-home-figure {
+    width: 100%;
+    margin-top: 0.6rem;
+  }
+
+  .home-introduction {
+    font-size: 1.02rem;
+  }
+}
+
+@media print {
+  .bd-header,
+  .bd-sidebar-primary,
+  .bd-sidebar-secondary,
+  .bd-footer {
+    display: none !important;
+  }
+
+  img.pysht-home-figure {
+    max-width: 8.5in;
+  }
+}

@@ -15,7 +15,7 @@ import pytest
 from numpy.typing import ArrayLike, NDArray
 from scipy.spatial.distance import cdist, pdist
 
-from pysht.equaldist import biswas_ghosh_2samp
+from pysht.equaldist import bg_2samp
 
 _TIE_RTOL = 100.0 * np.finfo(np.float64).eps
 
@@ -72,7 +72,7 @@ def test_fixed_univariate_fixture_has_hand_calculated_values() -> None:
     x = np.array([0.0, 2.0])
     y = np.array([1.0, 5.0, 8.0])
 
-    result = biswas_ghosh_2samp(
+    result = bg_2samp(
         x,
         y,
         calibration="exact",
@@ -94,7 +94,7 @@ def test_fixed_rectangle_fixture_has_hand_calculated_values_and_ties() -> None:
     x = np.array([[0.0, 0.0], [0.0, 2.0]])
     y = np.array([[3.0, 0.0], [3.0, 2.0]])
 
-    result = biswas_ghosh_2samp(
+    result = bg_2samp(
         x,
         y,
         calibration="exact",
@@ -131,7 +131,7 @@ def test_exact_calibration_matches_independent_exhaustive_oracle() -> None:
         _exhaustive_permutation_oracle(x, y)
     )
 
-    result = biswas_ghosh_2samp(
+    result = bg_2samp(
         x,
         y,
         calibration="exact",
@@ -162,7 +162,7 @@ def test_translation_rotation_and_feature_permutation_are_invariant() -> None:
         ]
     )
     total = math.comb(x.shape[0] + y.shape[0], x.shape[0])
-    baseline = biswas_ghosh_2samp(
+    baseline = bg_2samp(
         x,
         y,
         calibration="exact",
@@ -190,7 +190,7 @@ def test_translation_rotation_and_feature_permutation_are_invariant() -> None:
         expected_statistic, expected_exceedances, _, expected_pvalue = (
             _exhaustive_permutation_oracle(transformed_x, transformed_y)
         )
-        transformed = biswas_ghosh_2samp(
+        transformed = bg_2samp(
             transformed_x,
             transformed_y,
             calibration="exact",
@@ -222,7 +222,7 @@ def test_raw_and_normalized_statistics_have_declared_scale_relation() -> None:
     x = np.array([[-1.0, 0.0], [0.0, 2.0], [1.5, -0.5]])
     y = np.array([[-2.0, 1.0], [0.5, 0.75], [3.0, 2.5]])
     total = math.comb(x.shape[0] + y.shape[0], x.shape[0])
-    result = biswas_ghosh_2samp(
+    result = bg_2samp(
         x,
         y,
         calibration="exact",
@@ -240,7 +240,7 @@ def test_raw_and_normalized_statistics_have_declared_scale_relation() -> None:
     )
 
     factor = 2.75
-    scaled = biswas_ghosh_2samp(
+    scaled = bg_2samp(
         factor * x,
         factor * y,
         calibration="exact",

@@ -41,14 +41,24 @@ _LOG_FLOAT_MIN = math.log(float(np.nextafter(0.0, 1.0)))
 def _sample_variance_log(values: NDArray[np.float64]) -> float:
     """Return the natural logarithm of the unbiased sample variance.
 
-    Scaling before centering prevents avoidable overflow in both the mean and
-    squared deviations.  ``-inf`` represents an exactly zero sample variance.
+    Subtracting an exactly representable sample anchor before scaling preserves
+    within-sample differences near a large common offset.  Opposite-sign
+    endpoints can make that subtraction overflow, in which case scaling first
+    is the safe fallback.  ``-inf`` represents an exactly zero sample variance.
     """
-    magnitude = float(np.max(np.abs(values)))
-    if magnitude == 0.0:
-        return -math.inf
-
-    scaled = values / magnitude
+    anchor = float(np.min(values))
+    with np.errstate(over="ignore", invalid="ignore"):
+        shifted = values - anchor
+    if np.all(np.isfinite(shifted)):
+        magnitude = float(np.max(np.abs(shifted)))
+        if magnitude == 0.0:
+            return -math.inf
+        scaled = shifted / magnitude
+    else:
+        magnitude = float(np.max(np.abs(values)))
+        if magnitude == 0.0:
+            return -math.inf
+        scaled = values / magnitude
     center = float(np.mean(scaled, dtype=np.float64))
     deviations = scaled - center
     sum_squares = float(np.dot(deviations, deviations))
@@ -62,14 +72,30 @@ def _sample_variance_log(values: NDArray[np.float64]) -> float:
 def _relative_variance_logs(
     groups: tuple[NDArray[np.float64], ...],
 ) -> tuple[float, tuple[float, ...]]:
-    """Return variance logs after one common normalization of all groups."""
+    """Return variance logs without erasing a much smaller group's spread."""
     common_scale = max(float(np.max(np.abs(group))) for group in groups)
     if common_scale == 0.0:
         return (0.0, tuple(-math.inf for _ in groups))
-    return (
-        common_scale,
-        tuple(_sample_variance_log(group / common_scale) for group in groups),
-    )
+
+    relative_logs: list[float] = []
+    log_common_square = 2.0 * math.log(common_scale)
+    for group in groups:
+        anchor = float(np.min(group))
+        with np.errstate(over="ignore", invalid="ignore"):
+            shifted = group - anchor
+        normalized = (
+            shifted / common_scale
+            if np.all(np.isfinite(shifted))
+            else group / common_scale
+        )
+        relative_log = _sample_variance_log(normalized)
+        if relative_log == -math.inf and not np.all(group == group[0]):
+            # A genuinely positive but vastly smaller spread may underflow on
+            # the common scale.  Retain it through its independently scaled
+            # logarithm instead.
+            relative_log = _sample_variance_log(group) - log_common_square
+        relative_logs.append(relative_log)
+    return common_scale, tuple(relative_logs)
 
 
 def _exp_extended(log_value: float) -> float:
@@ -157,10 +183,10 @@ def _ratio_alternative(alternative: Alternative) -> str:
 
 def chisquare_1samp(
     x: ArrayLike,
-    variance: object = 1.0,
     *,
+    variance: float = 1.0,
     alternative: str = "two-sided",
-    confidence_level: object = 0.95,
+    confidence_level: float = 0.95,
 ) -> HypothesisTestResult:
     """Test one normal population variance against a positive value.
 
@@ -242,7 +268,7 @@ def f_2samp(
     y: ArrayLike,
     *,
     alternative: str = "two-sided",
-    confidence_level: object = 0.95,
+    confidence_level: float = 0.95,
 ) -> HypothesisTestResult:
     """Test equality of two normal population variances with an F ratio.
 
@@ -367,15 +393,40 @@ def _absolute_deviation_anova(
 ) -> HypothesisTestResult:
     """Apply one-way ANOVA to absolute within-group deviations."""
     groups = validate_groups(samples)
-    common_scale = max(float(np.max(np.abs(group))) for group in groups)
-    if common_scale == 0.0:
-        raise ValueError("the test is undefined when all samples are constant")
-
-    deviations: list[NDArray[np.float64]] = []
+    normalized_deviations: list[NDArray[np.float64]] = []
+    log_scales: list[float] = []
     for group in groups:
-        normalized = group / common_scale
+        anchor = float(np.min(group))
+        with np.errstate(over="ignore", invalid="ignore"):
+            shifted = group - anchor
+        if np.all(np.isfinite(shifted)):
+            group_scale = float(np.max(np.abs(shifted)))
+            normalized = (
+                np.zeros_like(group) if group_scale == 0.0 else shifted / group_scale
+            )
+        else:
+            group_scale = float(np.max(np.abs(group)))
+            normalized = group / group_scale
         group_center = center(normalized)
-        deviations.append(np.abs(normalized - group_center))
+        group_deviations = np.abs(normalized - group_center)
+        deviation_scale = float(np.max(group_deviations))
+        if deviation_scale == 0.0:
+            normalized_deviations.append(np.zeros_like(group_deviations))
+            log_scales.append(-math.inf)
+        else:
+            normalized_deviations.append(group_deviations / deviation_scale)
+            log_scales.append(math.log(group_scale) + math.log(deviation_scale))
+
+    finite_log_scales = [value for value in log_scales if math.isfinite(value)]
+    if not finite_log_scales:
+        raise ValueError("the test is undefined when all samples are constant")
+    common_log_scale = max(finite_log_scales)
+    deviations = [
+        values * math.exp(log_scale - common_log_scale)
+        if math.isfinite(log_scale)
+        else np.zeros_like(values)
+        for values, log_scale in zip(normalized_deviations, log_scales, strict=True)
+    ]
 
     sizes = np.asarray([group.size for group in groups], dtype=np.float64)
     group_means = np.asarray(

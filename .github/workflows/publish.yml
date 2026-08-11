@@ -1,0 +1,329 @@
+name: Publish to PyPI
+
+run-name: Publish ${{ github.event.release.tag_name }} to PyPI
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pypi-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+env:
+  CMAKE_BUILD_PARALLEL_LEVEL: "2"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  validate-release:
+    name: Validate release metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Match the project, version, tag, and release kind
+        id: metadata
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_IS_PRERELEASE: ${{ github.event.release.prerelease }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          import tomllib
+          from pathlib import Path
+
+          project = tomllib.loads(Path("pyproject.toml").read_text())["project"]
+          name = project["name"]
+          version = project["version"]
+          tag = os.environ["RELEASE_TAG"]
+          version_pattern = re.compile(
+              r"(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){1,3}"
+              r"(?:(?:a|b|rc)[0-9]+)?(?:\.post[0-9]+)?(?:\.dev[0-9]+)?"
+          )
+          if name != "pysht":
+              raise SystemExit(f"expected project name 'pysht', found {name!r}")
+          if not isinstance(version, str) or version_pattern.fullmatch(version) is None:
+              raise SystemExit(f"unsupported release version: {version!r}")
+          if tag != f"v{version}":
+              raise SystemExit(
+                  f"release tag {tag!r} must exactly match project version v{version}"
+              )
+          is_prerelease = re.search(r"(?:a|b|rc)[0-9]+|\.dev[0-9]+", version) is not None
+          release_is_prerelease = os.environ["RELEASE_IS_PRERELEASE"] == "true"
+          if is_prerelease != release_is_prerelease:
+              raise SystemExit(
+                  "GitHub's pre-release setting must agree with the project version"
+              )
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+              output.write(f"version={version}\n")
+          PY
+      - name: Require the tagged commit to be on master
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$GITHUB_SHA"
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/master
+
+  verify-source:
+    name: Test source tree
+    needs: validate-release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install the package and development tools
+        run: python -m pip install -e ".[dev,test]"
+      - name: Lint and format check
+        run: |
+          ruff check src tests tools docs/conf.py
+          ruff format --check src tests tools docs/conf.py
+      - name: Type check
+        run: mypy src/pysht tools
+      - name: Run tests with branch coverage
+        run: >-
+          python -m pytest -W error --cov=pysht --cov-report=term-missing
+          --cov-fail-under=90
+      - name: Build documentation with warnings as errors
+        run: sphinx-build -W --keep-going -b html docs docs/_build/html
+
+  verify-minimum-runtime:
+    name: Test minimum runtime dependencies
+    needs: validate-release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install declared minimum runtime dependencies
+        run: |
+          python -m pip install "numpy==2.1.0" "scipy==1.15.0"
+          python -m pip install --no-deps -e .
+          python -m pip install "pytest>=8.3"
+      - name: Run the complete suite at the lower bounds
+        run: python -m pytest -W error
+
+  build-sdist:
+    name: Build and smoke-test source archive
+    needs: [validate-release, verify-source, verify-minimum-runtime]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install pinned release tools
+        run: python -m pip install "build==1.5.0" "twine==7.0.0"
+      - name: Build and validate the source archive
+        run: |
+          python -m build --sdist --outdir dist
+          python -m twine check --strict dist/*
+      - name: Install and exercise the source archive
+        shell: bash
+        run: |
+          python -m pip install dist/*.tar.gz
+          python -I tools/wheel_smoke.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 14
+
+  build-wheels:
+    name: Build wheel (${{ matrix.platform.name }})
+    needs: [validate-release, verify-source, verify-minimum-runtime]
+    runs-on: ${{ matrix.platform.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: Linux x86-64
+            slug: linux-x86_64
+            runner: ubuntu-24.04
+            arch: x86_64
+          - name: macOS Apple Silicon
+            slug: macos-arm64
+            runner: macos-15
+            arch: arm64
+          - name: macOS Intel
+            slug: macos-x86_64
+            runner: macos-15-intel
+            arch: x86_64
+          - name: Windows AMD64
+            slug: windows-amd64
+            runner: windows-2022
+            arch: AMD64
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install pinned wheel tools
+        run: python -m pip install "cibuildwheel==4.2.0" "twine==7.0.0"
+      - name: Build the stable-ABI wheel
+        run: python -m cibuildwheel --output-dir wheelhouse
+        env:
+          CIBW_ARCHS: ${{ matrix.platform.arch }}
+          CIBW_BUILD: "cp312-*"
+          CIBW_ENVIRONMENT_MACOS: "MACOSX_DEPLOYMENT_TARGET=11.0"
+          CIBW_SKIP: "*-musllinux_*"
+      - name: Validate wheel metadata
+        shell: bash
+        run: python -m twine check --strict wheelhouse/*.whl
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-wheels-${{ matrix.platform.slug }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 14
+
+  smoke-wheels:
+    name: Smoke wheel (${{ matrix.platform.name }}, Python ${{ matrix.python-version }})
+    needs: build-wheels
+    runs-on: ${{ matrix.platform.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: Linux x86-64
+            slug: linux-x86_64
+            runner: ubuntu-24.04
+          - name: macOS Apple Silicon
+            slug: macos-arm64
+            runner: macos-15
+          - name: macOS Intel
+            slug: macos-x86_64
+            runner: macos-15-intel
+          - name: Windows AMD64
+            slug: windows-amd64
+            runner: windows-2022
+        python-version: ["3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-wheels-${{ matrix.platform.slug }}
+          path: wheelhouse
+      - name: Install the exact release wheel
+        shell: bash
+        run: |
+          python -m pip install "numpy>=2.1" "scipy>=1.15"
+          python -m pip install --no-deps wheelhouse/*.whl
+      - name: Exercise the installed wheel in isolated mode
+        run: python -I tools/wheel_smoke.py
+
+  assemble:
+    name: Assemble verified release
+    needs: [validate-release, build-sdist, smoke-wheels]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-sdist
+          path: incoming/release-sdist
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: release-wheels-*
+          path: incoming
+      - name: Validate and assemble the complete artifact set
+        env:
+          RELEASE_VERSION: ${{ needs.validate-release.outputs.version }}
+        run: >-
+          python tools/assemble_release.py --input incoming --output dist
+          --distribution pysht --version "$RELEASE_VERSION"
+          --manifest release-sha256.txt
+      - name: Verify metadata and display hashes
+        run: |
+          python -m pip install "twine==7.0.0"
+          python -m twine check --strict dist/*
+          cat release-sha256.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-distributions
+          path: dist/*
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 14
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-sha256
+          path: release-sha256.txt
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 14
+
+  publish:
+    name: Publish verified artifacts
+    needs: assemble
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/p/pysht
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-distributions
+          path: dist
+      - name: Publish distributions with Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: dist/
+          print-hash: true
