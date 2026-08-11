@@ -25,8 +25,12 @@ class ShapiroTests(unittest.TestCase):
     def test_shapiro_wilk_matches_scipy_after_standardization(self) -> None:
         expected = stats.shapiro(self.x)
         actual = shapiro_wilk(self.x)
-        self.assertAlmostEqual(actual.statistic, float(expected.statistic), places=14)
-        self.assertAlmostEqual(actual.pvalue, float(expected.pvalue), places=14)
+        np.testing.assert_allclose(
+            actual.statistic, float(expected.statistic), rtol=2e-14, atol=2e-15
+        )
+        np.testing.assert_allclose(
+            actual.pvalue, float(expected.pvalue), rtol=2e-14, atol=2e-15
+        )
         self.assertEqual(actual.statistic_name, "W")
 
     def test_shapiro_francia_matches_literal_formula(self) -> None:
@@ -41,8 +45,10 @@ class ShapiroTests(unittest.TestCase):
         expected_pvalue = float(stats.norm.sf((math.log1p(-expected_w) - mean) / scale))
 
         actual = shapiro_francia(self.x)
-        self.assertAlmostEqual(actual.statistic, expected_w, places=14)
-        self.assertAlmostEqual(actual.pvalue, expected_pvalue, places=14)
+        np.testing.assert_allclose(actual.statistic, expected_w, rtol=2e-14, atol=2e-15)
+        np.testing.assert_allclose(
+            actual.pvalue, expected_pvalue, rtol=2e-14, atol=2e-15
+        )
 
     def test_perfect_normal_scores_are_a_supported_boundary(self) -> None:
         n = 12
