@@ -21,7 +21,6 @@ extensions = [
     "numpydoc",
     "sphinx.ext.autodoc",
     "sphinx.ext.autosummary",
-    "sphinx.ext.githubpages",
     "sphinx.ext.mathjax",
     "sphinx.ext.viewcode",
     "sphinx_copybutton",
@@ -66,7 +65,7 @@ bibtex_default_style = "unsrt"
 html_theme = "pydata_sphinx_theme"
 html_title = "pySHT"
 html_short_title = "pySHT"
-html_baseurl = "https://kisungyou.com/pysht/"
+html_baseurl = "https://www.kisungyou.com/pysht/"
 html_static_path = ["_static"]
 html_css_files = ["css/custom.css"]
 html_favicon = "_static/favicon.png"

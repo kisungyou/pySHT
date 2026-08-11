@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://kisungyou.com/pysht/sitemap.xml
+Sitemap: https://www.kisungyou.com/pysht/sitemap.xml
