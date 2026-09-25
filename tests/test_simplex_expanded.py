@@ -346,7 +346,7 @@ def test_alpha_energy_adversarial_last_bit_invariance_regression() -> None:
     assert variant.pvalue == baseline.pvalue
 
 
-def test_alpha_energy_clamps_certified_negative_roundoff() -> None:
+def test_alpha_energy_near_identical_samples_remains_nonnegative() -> None:
     # This named construction makes two empirical distributions differ only
     # near float64 resolution.  Direct subtraction of their three nonnegative
     # distance means used to report a negative energy statistic.
@@ -371,7 +371,60 @@ def test_alpha_energy_clamps_certified_negative_roundoff() -> None:
         n_resamples=1,
         rng=0,
     )
-    assert result.statistic == 0.0
+    transformed_first = _alpha_coordinates(first, alpha)
+    transformed_second = _alpha_coordinates(second, alpha)
+    cross_mean = float(np.mean(distance.cdist(transformed_first, transformed_second)))
+    first_mean = float(np.mean(distance.cdist(transformed_first, transformed_first)))
+    second_mean = float(np.mean(distance.cdist(transformed_second, transformed_second)))
+    # The triangle inequality bounds the exact energy contrast by twice the
+    # mean paired displacement. Multiplying by n/2 gives the statistic bound.
+    displacement_bound = sample_size * float(
+        np.mean(np.linalg.norm(transformed_first - transformed_second, axis=1))
+    )
+    # A near-zero contrast may round to either sign across platforms. Allow
+    # the implementation's certified roundoff budget at the distance scale,
+    # while still requiring every returned statistic to be nonnegative.
+    roundoff_bound = (
+        500.0
+        * np.finfo(np.float64).eps
+        * (sample_size / 2.0)
+        * math.fsum((2.0 * cross_mean, first_mean, second_mean))
+    )
+    assert 0.0 <= result.statistic <= displacement_bound + roundoff_bound
+    assert result.exceedances == result.n_resamples == 1
+    assert result.pvalue == 1.0
+
+
+@pytest.mark.parametrize("scale", [2.0**-500, 1.0, 2.0**500])
+def test_alpha_energy_clamps_certified_negative_roundoff(scale: float) -> None:
+    # Adjacent binary floats force a negative contrast independently of the
+    # platform's transcendental functions and distance reductions.
+    result = simplex._nonnegative_energy_contrast(
+        cross_mean=scale,
+        first_mean=scale,
+        second_mean=math.nextafter(scale, math.inf),
+    )
+    assert result == 0.0
+
+
+@pytest.mark.parametrize("scale", [2.0**-500, 1.0, 2.0**500])
+def test_alpha_energy_preserves_positive_roundoff(scale: float) -> None:
+    result = simplex._nonnegative_energy_contrast(
+        cross_mean=scale,
+        first_mean=scale,
+        second_mean=math.nextafter(scale, 0.0),
+    )
+    assert result > 0.0
+
+
+@pytest.mark.parametrize("scale", [2.0**-500, 1.0, 2.0**500])
+def test_alpha_energy_rejects_uncertified_negative_contrast(scale: float) -> None:
+    with pytest.raises(ArithmeticError, match="energy contrast became negative"):
+        simplex._nonnegative_energy_contrast(
+            cross_mean=scale,
+            first_mean=scale,
+            second_mean=2.0 * scale,
+        )
 
 
 def test_alpha_transform_is_continuous_at_zero() -> None:
