@@ -7,7 +7,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "pysht"
-version = "0.5.0.dev0"
+version = "0.5.0rc1"
 description = "Validated statistical hypothesis tests for scientific Python"
 readme = "README.md"
 requires-python = ">=3.12"

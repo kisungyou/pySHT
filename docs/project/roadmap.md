@@ -1,11 +1,10 @@
 # Roadmap
 
-pySHT 0.1.0 is the initial public release. The combined 0.2--0.5 development
-line preserves its validation-driven SHT compatibility core and adds
-independently sourced research methods rather than treating a larger catalog
-as sufficient evidence.
-The project remains pre-1.0: changes to the public surface are possible, but
-they must be intentional, tested, and recorded.
+pySHT 0.5.0rc1 is a release candidate for 0.5.0;
+0.1.0 remains the latest stable release. The candidate combines the
+0.2--0.5 expansion while preserving the validated SHT compatibility core.
+Its 72-function public API is fixed during 0.5 stabilization, except for
+documented correctness fixes. New methods belong to later releases.
 
 ## Implemented expansion
 
@@ -13,7 +12,7 @@ they must be intentional, tested, and recorded.
   statistical routine identities; the one shared implementation and the
   validation-blocked mean CLX and Fisher identities are documented in the
   [migration crosswalk](../migration/from-r.md).
-- Twenty-one validated pySHT-native methods expand the development API to 72
+- Twenty-one validated pySHT-native methods expand the candidate API to 72
   canonical public functions. They add dense and fixed-small-sample mean
   tests, one-sample covariance tests, energy/kernel distribution tests,
   pairwise and mutual independence, multivariate normality, nearest-neighbor
@@ -61,7 +60,7 @@ Monte-Carlo comparisons, corrected tail counts, and fixed auxiliary
 randomness. A method is not silently switched to a different statistic when a
 gate fails.
 
-## Current expansion status
+## Candidate scope
 
 The research program is organized by scientific dependency rather than by
 catalog pressure:
@@ -85,7 +84,7 @@ public-versus-blocked record. A blocked candidate does not receive a
 `NotImplementedError` placeholder and does not delay an unrelated method that
 has passed its own gates.
 
-## Priorities after the current expansion
+## Priorities after 0.5
 
 ### Broaden the scientific evidence
 
@@ -133,13 +132,14 @@ Known corrections to legacy code are recorded in the
 [legacy audit](../validation/legacy-audit.md), not hidden behind compatibility
 switches.
 
-## Stability policy during development
+## Stability policy before 1.0
 
-Before version 1.0, function names, signatures, return metadata, and supported
-Python versions can change in a minor release. Changes must nevertheless be
-intentional, tested, recorded in the changelog, and accompanied by migration
-guidance when they affect users. Once a stable API is declared, incompatible
-public changes are reserved for major releases.
+During 0.5 stabilization, function names, signatures, and result contracts
+remain fixed unless a documented correctness fix requires a change. Later
+minor releases before 1.0 may change the API or supported Python versions.
+Changes must be intentional, tested, recorded in the changelog, and accompanied
+by migration guidance when they affect users. Once a stable API is declared,
+incompatible public changes are reserved for major releases.
 
 ## How to contribute evidence
 

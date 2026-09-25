@@ -11,11 +11,12 @@ validated successor to the R package
 [SHT](https://github.com/kisungyou/SHT); it does not treat legacy numerical
 output as a correctness oracle.
 
-> **Status:** version 0.1.0 is the initial public release. The current source
-> tree is the combined, correctness-gated 0.2--0.5 expansion line, currently
-> versioned 0.5.0.dev0; APIs may still evolve before version 1.0.
+> **Status:** this source tree contains release candidate **0.5.0rc1**.
+> Version **0.1.0** remains the latest stable
+> release. The 72-function API is fixed during 0.5 stabilization, except for
+> documented correctness fixes.
 
-Install the release from PyPI:
+Install the latest stable release from PyPI:
 
 ```console
 python -m pip install pysht
@@ -23,7 +24,7 @@ python -m pip install pysht
 
 ## Statistical scope
 
-The development API contains 72 canonical Python functions: 51 compatibility
+The candidate API contains 72 canonical Python functions: 51 compatibility
 functions covering 52 of the 54 public statistical routine identities in SHT
 0.1.9, plus 21 pySHT-native research methods. Two algebraically identical R
 entry points share one Python implementation. The withheld SHT identities are

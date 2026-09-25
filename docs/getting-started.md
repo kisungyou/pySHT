@@ -7,14 +7,16 @@ your question and sampling design, start with the
 
 ## Installation
 
-pySHT requires Python 3.12 or newer. Install the current release from PyPI:
+pySHT requires Python 3.12 or newer. Install the latest stable release,
+currently 0.1.0, from PyPI:
 
 ```console
 python -m pip install pysht
 ```
 
-For development from a source checkout, a C++17 compiler and CMake are also
-required:
+This documentation describes release candidate 0.5.0rc1.
+To test the candidate from its source checkout, a C++17 compiler
+and CMake are also required:
 
 ```console
 python -m pip install -e ".[test]"

@@ -1,18 +1,19 @@
 # Citation
 
-pySHT does not currently have an archived DOI. Cite the released software
-version so the computation can be reconstructed; adding the exact source
-revision is useful when an analysis depends on unreleased changes.
+pySHT does not currently have an archived DOI. Cite the exact software version
+used so the computation can be reconstructed. For an unpublished candidate or
+other unreleased source, also include the Git commit identifier and access
+date. The examples below describe candidate 0.5.0rc1;
+replace the version when citing a different installation.
 
 ## Suggested citation
 
 > You, K. (2026). *pySHT: Validated statistical hypothesis tests for scientific
-> Python* (version 0.1.0) [Computer software].
-> <https://kisungyou.com/pysht/>.
+> Python* (version 0.5.0rc1, release candidate) [Computer software].
+> <https://www.kisungyou.com/pysht/>.
 
-Add the Git commit identifier and access date when using an unreleased source
-revision. If a future release provides an archive DOI, prefer that
-release-specific citation.
+If a future release provides an archive DOI, prefer that release-specific
+citation.
 
 ## BibTeX
 
@@ -21,9 +22,9 @@ release-specific citation.
   author  = {You, Kisung},
   title   = {{pySHT}: Validated Statistical Hypothesis Tests for Scientific Python},
   year    = {2026},
-  version = {0.1.0},
-  url     = {https://kisungyou.com/pysht/},
-  note    = {Software release}
+  version = {0.5.0rc1},
+  url     = {https://www.kisungyou.com/pysht/},
+  note    = {Release candidate}
 }
 ```
 

@@ -2,10 +2,14 @@
 
 ## Unreleased
 
+## 0.5.0rc1 - 2026-09-25
+
+Release candidate for testing before 0.5.0.
+
 ### Added
 
-- Added 21 correctness-gated pySHT-native methods, bringing the development
-  surface to 72 canonical public functions. The additions comprise Chen--Qin
+- Added 21 correctness-gated pySHT-native methods, bringing the candidate
+  API to 72 canonical public functions. The additions comprise Chen--Qin
   and Li high-dimensional mean tests; Chen--Zhang--Zhong covariance tests;
   energy and MMD distribution tests; distance covariance,
   HSIC, dHSIC, and distance multivariance; multivariate Henze--Zirkler and

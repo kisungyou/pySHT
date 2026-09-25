@@ -1,6 +1,6 @@
 # Methods and implementation status
 
-The development API has 72 canonical public functions. Its 51-function
+The candidate API has 72 canonical public functions. Its 51-function
 compatibility core covers 52 of the 54 public statistical routine identities
 in SHT 0.1.9; `mvar1.1998AS` and `mvar1.LRT` are algebraically the same test
 and share `pysht.mean_variance.lrt_1samp`. Another 21 validated research

@@ -4,7 +4,7 @@ Categories [0]--[10] preserve the order used by the
 [SHT reference](https://www.kisungyou.com/SHT/reference/index.html). Categories
 [11]--[12] contain pySHT-native independence and circular-data methods. The R
 crosswalk remains limited to SHT identities; native additions have their own
-[catalog](../methods/native-methods.md). The development catalog contains 72
+[catalog](../methods/native-methods.md). The candidate catalog contains 72
 canonical public functions, including 21 validated pySHT-native additions.
 Every public function uses lowercase
 `snake_case`, lives in its scientific module, and is not re-exported from

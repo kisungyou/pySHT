@@ -165,6 +165,7 @@ def main() -> None:
 
     build_info = _core.build_info()
     assert build_info["stable_abi"] is True
+    assert build_info["version"] == pysht.__version__
     print(
         f"pysht {pysht.__version__}: installed-wheel smoke test passed for 72 functions"
     )
