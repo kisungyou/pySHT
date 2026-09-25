@@ -16,7 +16,7 @@ from pysht._results import BayesFactorTestResult, HypothesisTestResult
 from pysht.covariance import (
     clx_2samp,
     lc_2samp,
-    lyl_2samp,
+    maximum_pairwise_bayes_factor_2samp,
     schott_2001_ksamp,
     schott_2007_ksamp,
     wl_1samp,
@@ -181,8 +181,10 @@ class TestPublicContract(CovarianceFixtures):
                 "wl_1samp",
                 "lc_2samp",
                 "clx_2samp",
+                "czz_identity_1samp",
+                "czz_sphericity_1samp",
                 "wl_2samp",
-                "lyl_2samp",
+                "maximum_pairwise_bayes_factor_2samp",
                 "schott_2001_ksamp",
                 "schott_2007_ksamp",
             },
@@ -198,10 +200,11 @@ class TestPublicContract(CovarianceFixtures):
         self.assertEqual(
             inspect.signature(wl_2samp).parameters["n_projections"].default, 50
         )
-        self.assertEqual(inspect.signature(lyl_2samp).parameters["a0"].default, 0.01)
-        self.assertEqual(inspect.signature(lyl_2samp).parameters["b0"].default, 0.01)
-        self.assertEqual(inspect.signature(lyl_2samp).parameters["alpha"].default, 2.01)
-        self.assertIsNone(inspect.signature(lyl_2samp).parameters["gamma"].default)
+        signature = inspect.signature(maximum_pairwise_bayes_factor_2samp)
+        self.assertEqual(signature.parameters["a0"].default, 0.01)
+        self.assertEqual(signature.parameters["b0"].default, 0.01)
+        self.assertEqual(signature.parameters["alpha"].default, 2.01)
+        self.assertIsNone(signature.parameters["gamma"].default)
 
     def test_results_are_immutable_and_have_htest_rendering(self) -> None:
         result = clx_2samp(self.x, self.y)
@@ -342,6 +345,23 @@ class TestWuLi(CovarianceFixtures):
         self.assertGreater(result.pvalue, 0.0)
         np.testing.assert_allclose(result.pvalue, expected, rtol=2e-15)
 
+    def test_one_sample_whitening_preserves_heterogeneous_units(self) -> None:
+        standardized = np.random.default_rng(7004).normal(size=(100, 3))
+        scales = np.array([1.0e-150, 1.0, 1.0e150])
+        values = standardized * scales
+        popcov = np.diag(scales * scales)
+
+        baseline = wl_1samp(standardized, n_projections=17, rng=7005)
+        actual = wl_1samp(
+            values,
+            popcov=popcov,
+            n_projections=17,
+            rng=7005,
+        )
+
+        np.testing.assert_allclose(actual.statistic, baseline.statistic, rtol=3e-13)
+        np.testing.assert_allclose(actual.pvalue, baseline.pvalue, rtol=3e-13)
+
     def test_two_sample_group_exchange_and_common_units(self) -> None:
         actual = wl_2samp(self.x, self.y, n_projections=19, rng=33)
         swapped = wl_2samp(self.y, self.x, n_projections=19, rng=33)
@@ -456,6 +476,49 @@ class TestCaiLiuXia(CovarianceFixtures):
         np.testing.assert_allclose(actual.statistic, expected, rtol=2e-13)
         np.testing.assert_allclose(actual.pvalue, expected_p)
 
+    def test_nearly_deterministic_products_avoid_fourth_moment_cancellation(
+        self,
+    ) -> None:
+        def sample(size: int, epsilon: float) -> np.ndarray:
+            signs = np.resize(np.array([-1.0, 1.0]), size)
+            linear = np.linspace(-1.0, 1.0, size)
+            oscillating = np.cos(np.arange(size, dtype=np.float64))
+            return np.column_stack(
+                (
+                    signs + epsilon * linear,
+                    signs + epsilon * oscillating,
+                    signs + epsilon * (linear + oscillating),
+                )
+            )
+
+        first = sample(100, 1.0e-9)
+        second = sample(120, 1.2e-9)
+        (first_centered, second_centered), _ = covariance._center_together(
+            first, second
+        )
+        covariance1 = first_centered.T @ first_centered / len(first)
+        covariance2 = second_centered.T @ second_centered / len(second)
+        theta1 = np.mean(
+            (first_centered[:, :, None] * first_centered[:, None, :] - covariance1)
+            ** 2,
+            axis=0,
+        )
+        theta2 = np.mean(
+            (second_centered[:, :, None] * second_centered[:, None, :] - covariance2)
+            ** 2,
+            axis=0,
+        )
+        expected = float(
+            np.max(
+                (covariance1 - covariance2) ** 2
+                / (theta1 / len(first) + theta2 / len(second))
+            )
+        )
+
+        actual = clx_2samp(first, second)
+
+        np.testing.assert_allclose(actual.statistic, expected, rtol=2e-13)
+
     def test_group_exchange_translation_and_scale_invariance(self) -> None:
         actual = clx_2samp(self.x, self.y)
         swapped = clx_2samp(self.y, self.x)
@@ -476,7 +539,9 @@ class TestLeeYouLin(CovarianceFixtures):
         b0 = 0.7
         gamma = 0.4
         expected = _literal_lyl(self.x, self.y, a0=a0, b0=b0, gamma=gamma)
-        actual = lyl_2samp(self.x, self.y, a0=a0, b0=b0, gamma=gamma)
+        actual = maximum_pairwise_bayes_factor_2samp(
+            self.x, self.y, a0=a0, b0=b0, gamma=gamma
+        )
         self.assertIsInstance(actual, BayesFactorTestResult)
         components = np.asarray(actual.component_log_bayes_factors)
         np.testing.assert_allclose(components, expected, rtol=2e-13)
@@ -487,7 +552,7 @@ class TestLeeYouLin(CovarianceFixtures):
     def test_published_defaults_match_equations_12_to_15(self) -> None:
         gamma = max(self.x.shape[0] + self.y.shape[0], self.x.shape[1]) ** -2.01
         expected = _literal_lyl(self.x, self.y, a0=0.01, b0=0.01, gamma=gamma)
-        actual = lyl_2samp(self.x, self.y)
+        actual = maximum_pairwise_bayes_factor_2samp(self.x, self.y)
         np.testing.assert_allclose(
             np.asarray(actual.component_log_bayes_factors), expected, rtol=2e-13
         )
@@ -497,18 +562,20 @@ class TestLeeYouLin(CovarianceFixtures):
         self.assertEqual(diagnostics["mean assumption"], "known zero")
 
     def test_group_exchange_and_feature_permutation(self) -> None:
-        actual = lyl_2samp(self.x, self.y)
-        swapped = lyl_2samp(self.y, self.x)
+        actual = maximum_pairwise_bayes_factor_2samp(self.x, self.y)
+        swapped = maximum_pairwise_bayes_factor_2samp(self.y, self.x)
         order = np.array([2, 0, 1])
-        permuted = lyl_2samp(self.x[:, order], self.y[:, order])
+        permuted = maximum_pairwise_bayes_factor_2samp(
+            self.x[:, order], self.y[:, order]
+        )
         np.testing.assert_allclose(swapped.statistic, actual.statistic, rtol=2e-13)
         np.testing.assert_allclose(permuted.statistic, actual.statistic, rtol=2e-13)
 
     def test_b0_has_units_and_scales_with_squared_data_units(self) -> None:
-        actual = lyl_2samp(self.x, self.y, b0=0.01)
+        actual = maximum_pairwise_bayes_factor_2samp(self.x, self.y, b0=0.01)
         for scale in (1e-150, 1e150):
             with self.subTest(scale=scale):
-                scaled = lyl_2samp(
+                scaled = maximum_pairwise_bayes_factor_2samp(
                     scale * self.x,
                     scale * self.y,
                     b0=0.01 * scale * scale,
@@ -519,7 +586,9 @@ class TestLeeYouLin(CovarianceFixtures):
 
         for scale in (1e-300, 1e300):
             with self.subTest(finite_scale=scale):
-                result = lyl_2samp(scale * self.x, scale * self.y)
+                result = maximum_pairwise_bayes_factor_2samp(
+                    scale * self.x, scale * self.y
+                )
                 self.assertTrue(math.isfinite(result.statistic))
 
     def test_heterogeneous_feature_scales_remain_evaluable(self) -> None:
@@ -528,9 +597,11 @@ class TestLeeYouLin(CovarianceFixtures):
         feature_scale = np.array([1e-150, 1.0, 1e150])
         first *= feature_scale
         second *= feature_scale
-        actual = lyl_2samp(first, second)
+        actual = maximum_pairwise_bayes_factor_2samp(first, second)
         order = np.array([2, 0, 1])
-        permuted = lyl_2samp(first[:, order], second[:, order])
+        permuted = maximum_pairwise_bayes_factor_2samp(
+            first[:, order], second[:, order]
+        )
         self.assertTrue(math.isfinite(actual.statistic))
         np.testing.assert_allclose(permuted.statistic, actual.statistic, rtol=2e-13)
 
@@ -542,11 +613,11 @@ class TestLeeYouLin(CovarianceFixtures):
             ("gamma", {"gamma": 0}),
         ):
             with self.subTest(name=name), self.assertRaises(ValueError):
-                lyl_2samp(self.x, self.y, **kwargs)
+                maximum_pairwise_bayes_factor_2samp(self.x, self.y, **kwargs)
         with self.assertRaises(ValueError):
-            lyl_2samp(self.x[:, :1], self.y[:, :1])
+            maximum_pairwise_bayes_factor_2samp(self.x[:, :1], self.y[:, :1])
         with self.assertRaises(ValueError):
-            lyl_2samp(np.zeros((5, 3)), np.zeros((6, 3)))
+            maximum_pairwise_bayes_factor_2samp(np.zeros((5, 3)), np.zeros((6, 3)))
 
 
 class TestSchott(CovarianceFixtures):

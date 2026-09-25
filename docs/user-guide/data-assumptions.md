@@ -12,11 +12,14 @@ Public procedures accept array-like, real numeric data representable as NumPy
 
 | Family | Expected shape |
 |---|---|
-| Univariate mean, variance, joint mean-and-variance, and normality | One-dimensional sample vectors |
+| Univariate mean, variance, and joint mean-and-variance | One-dimensional sample vectors |
 | Multivariate mean, covariance, and joint mean-and-covariance | Observation-by-feature matrices |
-| Equality of distributions | Two vectors or two observation-by-feature matrices with matching feature counts |
+| Normality | One-dimensional vectors for Shapiro/moment tests; observation-by-feature matrices for multivariate tests |
+| Equality of distributions | Two or more vectors or observation-by-feature matrices with matching feature counts, subject to the method |
+| Independence | Two or more row-paired vectors or observation-by-feature matrices with the same row count |
+| Circular data | One-dimensional angles; multi-sample equality accepts two or more angle vectors |
 | Rectangular uniformity | One observation-by-coordinate matrix |
-| Simplex uniformity | One observation-by-component matrix whose rows are compositions |
+| Simplex methods | One or more observation-by-component matrices whose rows are compositions |
 
 Every value must be finite. `NaN`, positive or negative infinity, complex
 values, Boolean arrays, empty feature dimensions, and ragged or nonnumeric
@@ -52,14 +55,17 @@ documentation says otherwise.
 | Levene and Brown--Forsythe | Independent groups; the F law for absolute deviations is an approximation |
 | High-dimensional mean tests | The paper-specific moment, trace, sparsity, factor, aspect-ratio, and covariance conditions; these differ materially across procedures |
 | Multivariate Behrens--Fisher tests | Independent multivariate samples, method-specific covariance rank, and the approximation used for effective degrees of freedom |
-| Covariance tests | Independent rows and the paper-specific Gaussian or moment assumptions; pooled-inverse procedures additionally need an invertible pooled estimate; `covariance.lyl_2samp` uses a known-zero-mean model |
+| Covariance tests | Independent rows and the paper-specific Gaussian or moment assumptions; pooled-inverse procedures additionally need an invertible pooled estimate; `covariance.maximum_pairwise_bayes_factor_2samp` uses a known-zero-mean model |
 | One- and two-sample mean-and-variance tests | Independent observations from normal populations with positive within-sample variance |
 | `mean_covariance.lrt_1samp` | Multivariate normality, more observations than features, and a positive-definite fitted covariance |
 | `mean_covariance.llzs_1samp` and `hn_2samp` | Their high-dimensional moment, aspect-ratio, and trace conditions rather than a generic small-sample guarantee |
 | Equality-of-distributions permutation test | Exchangeability of pooled observations under equality of the complete distributions |
+| Independence permutation tests | iid paired rows and joint factorization under the null; marginal row permutations are unrestricted only for that design |
 | Normality tests | Independent identically distributed scalar observations under a composite normal null; moment tests use Monte Carlo by default because their chi-square law is only asymptotic |
+| Multivariate normality | iid rows from a nonsingular multivariate normal law; the sample must have full centered rank and each simulated null replicate refits nuisance parameters |
 | Rectangular-uniformity tests | Independent observations from a uniform law on the declared, fixed hyperrectangle |
 | Simplex uniformity | Independent interior compositions under a Dirichlet `(1, ..., 1)` null; the likelihood-ratio p-value uses Wilks' approximation |
+| Circular tests | iid continuous angles; uniformity simulations use the declared period, while multi-sample permutations require pooled exchangeability and reject exact pooled ties |
 
 An asymptotic p-value is not an exact finite-sample guarantee. A method's
 public availability means that its implementation and advertised regimes are
@@ -85,12 +91,16 @@ Changing them can change a Monte Carlo result without changing the data.
   observations on the declared boundary; `ym_quantile` requires strict
   interior points because endpoints map to infinite normal quantiles.
 - Simplex rows must be nonnegative compositions summing to one within the
-  documented numerical tolerance. Every component must be strictly positive;
-  zeros are not perturbed or replaced.
+  documented numerical tolerance. The likelihood-ratio test and alpha-energy
+  with `alpha <= 0` require strict positivity. EHY simplex uniformity and
+  alpha-energy with `alpha > 0` admit boundary zeros; no value is jittered or
+  replaced.
+- Circular angles are reduced modulo a positive finite `period`. Changing
+  units requires changing both the values and period by the same factor.
 - A supplied `popcov` must be finite, symmetric, positive definite, and have
   the same dimension as the observations. It is a fixed null quantity, not an
   estimate formed by the function.
-- `covariance.lyl_2samp` uses observations as supplied in no-intercept
+- `covariance.maximum_pairwise_bayes_factor_2samp` uses observations as supplied in no-intercept
   conditional regressions. It does not silently center the groups; a zero mean
   is part of that published null model.
 
@@ -121,8 +131,10 @@ result.
 - Joint mean-and-variance methods require positive within-sample variance.
 - Normality statistics reject constant samples; Shapiro methods also enforce
   the sample-size range supported by their p-value approximations.
-- The distribution-equality statistic needs at least two observations in each
-  group and matching feature counts.
+- Distribution-equality and circular multi-group statistics need at least two
+  observations in each group. Kernel and distance methods reject undefined
+  constant-marginal or median-bandwidth cases according to their API pages.
+- `independence.dhsic` requires `n >= 2*d` for `d` row-paired blocks.
 - Dirichlet alternatives can have an unbounded maximum at degenerate samples;
   optimizer nonconvergence and boundary optima fail loudly.
 

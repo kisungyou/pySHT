@@ -23,6 +23,11 @@ it does not require an invertible sample covariance.
   result from the translated float64 observations.
 - Singular or high-dimensional covariance estimates are allowed, but the
   estimated trace and squared-trace correction must be positive.
+- `tr(S)` and `tr(S²)` are evaluated through the smaller of the centered row
+  and feature Gram matrices. Thus the high-dimensional path does not allocate
+  a dense $p\times p$ sample covariance, while a tall low-dimensional input
+  also avoids quadratic storage in its row count. A 5,000-feature guard
+  exercises both one- and two-sample public paths.
 
 ## Null calibration gate
 

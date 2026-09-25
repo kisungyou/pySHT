@@ -16,7 +16,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from scipy import optimize, stats
 
-from ._resampling import monte_carlo_calibration
+from ._resampling import monte_carlo_calibration, upper_tail_threshold
 from ._results import BayesFactorTestResult, HypothesisTestResult, ResamplingTestResult
 from ._validation import (
     Alternative,
@@ -34,14 +34,18 @@ __all__ = [
     "bs_1samp",
     "bs_2samp",
     "cph_ksamp",
+    "cq_2samp",
     "dempster_1samp",
     "dempster_2samp",
     "hotelling_1samp",
     "hotelling_2samp",
     "johansen_2samp",
     "ky_2samp",
+    "li_1samp",
+    "li_2samp",
+    "li_ksamp",
     "ljw_2samp",
-    "lyl_2samp",
+    "maximum_pairwise_bayes_factor_2samp",
     "nvm_2samp",
     "schott_ksamp",
     "sd_1samp",
@@ -135,11 +139,11 @@ def _t_confidence_interval(
     scale: float,
 ) -> tuple[float, float]:
     if alternative == "two-sided":
-        quantile = float(stats.t.ppf((1.0 + confidence_level) / 2.0, df))
+        quantile = float(stats.t.isf((1.0 - confidence_level) / 2.0, df))
         lower_scaled = estimate_scaled - quantile * standard_error_scaled
         upper_scaled = estimate_scaled + quantile * standard_error_scaled
     else:
-        quantile = float(stats.t.ppf(confidence_level, df))
+        quantile = float(stats.t.isf(1.0 - confidence_level, df))
         if alternative == "less":
             lower_scaled = -math.inf
             upper_scaled = estimate_scaled + quantile * standard_error_scaled
@@ -374,28 +378,55 @@ def anova_oneway(*samples: ArrayLike) -> HypothesisTestResult:
     )
 
 
-def _scaled_covariance(
-    values: NDArray[np.float64], scales: NDArray[np.float64]
-) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    scaled = values / scales
-    mean = np.mean(scaled, axis=0, dtype=np.float64)
-    centered = scaled - mean
-    covariance = centered.T @ centered / (values.shape[0] - 1)
-    return mean, covariance
+def _residual_svd(
+    centered: NDArray[np.float64], *, name: str
+) -> tuple[
+    NDArray[np.float64], NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]
+]:
+    """Factor equilibrated residuals without squaring their condition number.
 
-
-def _positive_definite_quadratic(
-    covariance: NDArray[np.float64], difference: NDArray[np.float64]
-) -> float:
+    Each group is centered independently, then columns of the stacked
+    residuals are equilibrated. Positive weights on the groups do not change
+    this rank, so the check applies to both pooled and mean covariances.
+    The usual SVD backward-error threshold depends on dimension and machine
+    precision, rather than on the physical units of individual features.
+    Inputs have already been scaled to keep centering representable.
+    """
+    scales = np.max(np.abs(centered), axis=0)
+    if np.any(scales == 0.0):
+        raise ValueError(f"{name} must be positive definite (dependent features)")
     try:
-        factor = np.linalg.cholesky(covariance)
-        standardized = np.linalg.solve(factor, difference)
+        left, singular_values, right = np.linalg.svd(
+            centered / scales, full_matrices=False
+        )
     except np.linalg.LinAlgError as exc:
-        raise ValueError("the covariance estimate must be positive definite") from exc
-    result = float(np.dot(standardized, standardized))
-    if math.isnan(result) or result < 0.0:
-        raise ValueError("the Hotelling quadratic form could not be evaluated")
-    return result
+        raise ValueError(f"{name} rank could not be determined") from exc
+    tolerance = np.finfo(np.float64).eps * max(centered.shape) * singular_values[0]
+    if singular_values.size < centered.shape[1] or singular_values[-1] <= tolerance:
+        raise ValueError(f"{name} must be positive definite (dependent features)")
+    return left, singular_values, right, scales
+
+
+def _require_full_covariance_rank(*groups: NDArray[np.float64], name: str) -> None:
+    centered = np.vstack(
+        tuple(group - np.mean(group, axis=0, dtype=np.float64) for group in groups)
+    )
+    _residual_svd(centered, name=name)
+
+
+def _hotelling_quadratic(
+    difference: NDArray[np.float64],
+    *groups: NDArray[np.float64],
+    name: str,
+) -> float:
+    """Evaluate a pooled-covariance quadratic directly from residuals."""
+    centered = np.vstack(
+        tuple(group - np.mean(group, axis=0, dtype=np.float64) for group in groups)
+    )
+    _, singular_values, right, scales = _residual_svd(centered, name=name)
+    standardized = (right @ (difference / scales)) / singular_values
+    within_df = sum(group.shape[0] - 1 for group in groups)
+    return float(within_df) * float(standardized @ standardized)
 
 
 def _positive_integer(value: object, *, name: str) -> int:
@@ -552,7 +583,26 @@ def _globally_scaled_anchored_groups(
 def _feature_scaled_anchored_groups(
     groups: tuple[NDArray[np.float64], ...],
 ) -> tuple[tuple[NDArray[np.float64], ...], NDArray[np.float64]]:
-    shifted, base_scale = _feature_anchored_groups(groups)
+    origin = np.minimum.reduce(tuple(np.min(group, axis=0) for group in groups))
+    with np.errstate(over="ignore", invalid="ignore"):
+        shifted = tuple(np.asarray(group - origin) for group in groups)
+    overflow_columns = np.logical_or.reduce(
+        tuple(np.any(~np.isfinite(group), axis=0) for group in shifted)
+    )
+    base_scale = np.ones(origin.size, dtype=np.float64)
+    if np.any(overflow_columns):
+        # Only the overflowing columns need division before subtraction.
+        # Applying a global fallback can erase another column's small but
+        # representable variation around its own large location.
+        maxima = np.maximum.reduce(
+            tuple(np.max(np.abs(group), axis=0) for group in groups)
+        )
+        base_scale[overflow_columns] = maxima[overflow_columns]
+        for raw, normalized in zip(groups, shifted, strict=True):
+            normalized[:, overflow_columns] = (
+                raw[:, overflow_columns] / base_scale[overflow_columns]
+                - origin[overflow_columns] / base_scale[overflow_columns]
+            )
     feature_scale = np.maximum.reduce(
         tuple(np.max(np.abs(group), axis=0) for group in shifted)
     )
@@ -578,6 +628,71 @@ def _sample_covariance(values: NDArray[np.float64]) -> NDArray[np.float64]:
         centered.T @ centered / (values.shape[0] - 1),
         dtype=np.float64,
     )
+
+
+def _cross_product_trace_square(values: NDArray[np.float64]) -> float:
+    """Return ``tr((values.T @ values) ** 2)`` using the smaller Gram."""
+    row_count, feature_count = values.shape
+    gram = values.T @ values if feature_count < row_count else values @ values.T
+    return float(np.sum(gram * gram, dtype=np.float64))
+
+
+def _covariance_trace_moments(
+    values: NDArray[np.float64],
+) -> tuple[float, float]:
+    """Return ``tr(S)`` and ``tr(S @ S)`` using the smaller Gram matrix."""
+    centered = values - np.mean(values, axis=0, dtype=np.float64)
+    within_df = float(values.shape[0] - 1)
+    trace = float(np.sum(centered * centered, dtype=np.float64)) / within_df
+    trace_squared = _cross_product_trace_square(centered) / within_df**2
+    return trace, trace_squared
+
+
+def _trace_sample_covariance_product(
+    first: NDArray[np.float64], second: NDArray[np.float64]
+) -> float:
+    """Return ``tr(S_first @ S_second)`` using the cheaper exact product."""
+    first_centered = first - np.mean(first, axis=0, dtype=np.float64)
+    second_centered = second - np.mean(second, axis=0, dtype=np.float64)
+    feature_count = first.shape[1]
+    # A feature-space calculation costs O((n1+n2)p^2), versus
+    # O(n1*n2*p) for the rectangular row Gram. Select by that operation count
+    # so both tall-low-dimensional and short-high-dimensional inputs remain
+    # practical.
+    if feature_count * (first.shape[0] + second.shape[0]) <= (
+        first.shape[0] * second.shape[0]
+    ):
+        first_product = first_centered.T @ first_centered
+        second_product = second_centered.T @ second_centered
+        numerator = float(np.sum(first_product * second_product.T, dtype=np.float64))
+    else:
+        cross = first_centered @ second_centered.T
+        numerator = float(np.sum(cross * cross, dtype=np.float64))
+    return float(numerator / ((first.shape[0] - 1) * (second.shape[0] - 1)))
+
+
+def _pooled_diagonal_and_correlation_trace_square(
+    groups: tuple[NDArray[np.float64], ...],
+) -> tuple[NDArray[np.float64], float]:
+    """Return a pooled covariance diagonal and ``tr(R @ R)`` via row Grams."""
+    centered = tuple(
+        group - np.mean(group, axis=0, dtype=np.float64) for group in groups
+    )
+    within_df = float(sum(group.shape[0] - 1 for group in groups))
+    diagonal_numerator = np.sum(
+        np.stack(
+            [np.sum(group * group, axis=0, dtype=np.float64) for group in centered]
+        ),
+        axis=0,
+        dtype=np.float64,
+    )
+    diagonal = np.asarray(diagonal_numerator / within_df, dtype=np.float64)
+    if np.any(diagonal <= 0.0):
+        raise ValueError("every feature must have positive pooled variance")
+
+    standardized = np.vstack(tuple(group / np.sqrt(diagonal) for group in centered))
+    trace_r2 = _cross_product_trace_square(standardized) / within_df**2
+    return diagonal, trace_r2
 
 
 def _trace_square(matrix: NDArray[np.float64]) -> float:
@@ -631,6 +746,246 @@ def _mean_result(
     )
 
 
+def _pairwise_inner_products(values: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Return ``x_i.T @ x_j`` for every unordered pair ``i < j``."""
+    rows = values.shape[0]
+    indices = np.triu_indices(rows, k=1)
+    gram = values @ values.T
+    return np.asarray(gram[indices], dtype=np.float64)
+
+
+def _li_studentized_result(
+    pairwise_products: NDArray[np.float64],
+    *,
+    method: str,
+    data_name: str,
+    alternative: str,
+) -> HypothesisTestResult:
+    """Studentize Li's asymptotically independent pairwise products."""
+    pair_count = pairwise_products.size
+    if pair_count < 2:
+        raise ValueError("Li's test requires at least three observations")
+    pair_mean = float(np.mean(pairwise_products, dtype=np.float64))
+    centered = pairwise_products - pair_mean
+    pair_variance = float(np.dot(centered, centered)) / (pair_count - 1)
+    _require_positive(pair_variance, name="Li pairwise-product variance")
+    statistic = pair_mean / math.sqrt(pair_variance / pair_count)
+    degrees = float(pair_count - 1)
+    return _mean_result(
+        statistic=statistic,
+        pvalue=float(stats.t.sf(statistic, degrees)),
+        method=method,
+        statistic_name="t",
+        calibration="asymptotic Student t distribution as dimension diverges",
+        data_name=data_name,
+        df=degrees,
+        alternative=alternative,
+        diagnostics=(("pairwise products", pair_count),),
+    )
+
+
+def li_1samp(x: ArrayLike, *, popmean: ArrayLike | None = None) -> HypothesisTestResult:
+    """Perform Li's fixed-small-sample high-dimensional one-sample test.
+
+    The procedure treats the inner products from all unordered observation
+    pairs as an asymptotically independent univariate sample as dimension
+    diverges.  Its Student calibration requires at least three observations
+    and the factor-model and trace conditions in Li (2023).
+    """
+    values = validate_2d_sample(x, name="x", minimum_rows=3)
+    null = _null_mean(popmean, values.shape[1])
+    scaled, _ = _scaled_centered_values(values, null)
+    return _li_studentized_result(
+        _pairwise_inner_products(scaled),
+        method="Li fixed-small-sample one-sample mean test (2023)",
+        data_name="x",
+        alternative="true mean vector differs from popmean",
+    )
+
+
+def _li_two_sample_vectors(
+    first: NDArray[np.float64], second: NDArray[np.float64]
+) -> NDArray[np.float64]:
+    """Construct the Scheffe difference vectors in Li (2023), Equation (6)."""
+    if first.shape[0] > second.shape[0]:
+        first, second = second, first
+    smaller_size = first.shape[0]
+    larger_size = second.shape[0]
+    ratio = math.sqrt(smaller_size / larger_size)
+    partial = second[:smaller_size]
+    return np.asarray(
+        first
+        - ratio * partial
+        + ratio * np.mean(partial, axis=0, dtype=np.float64)
+        - np.mean(second, axis=0, dtype=np.float64),
+        dtype=np.float64,
+    )
+
+
+def li_2samp(x: ArrayLike, y: ArrayLike) -> HypothesisTestResult:
+    """Perform Li's fixed-small-sample high-dimensional two-sample test.
+
+    The defining Scheffe construction pairs the smaller sample with the first
+    rows of the larger sample.  Row order is consequently part of the realized
+    statistic and must be unrelated to the measurements.
+    """
+    first, second = _multivariate_pair(x, y, minimum_rows=3)
+    (first_scaled, second_scaled), _ = _globally_scaled_anchored_groups((first, second))
+    differences = _li_two_sample_vectors(first_scaled, second_scaled)
+    return _li_studentized_result(
+        _pairwise_inner_products(differences),
+        method="Li fixed-small-sample two-sample mean test (2023)",
+        data_name="x and y",
+        alternative="true mean vectors differ",
+    )
+
+
+def li_ksamp(*samples: ArrayLike) -> HypothesisTestResult:
+    """Perform Li's fixed-small-sample high-dimensional ANOVA test.
+
+    The first smallest group in caller order is the paper's reference
+    population. Each other group is paired with that reference through the
+    paper's Scheffe construction, so row order is part of the realized
+    statistic. Li's theorem permits non-strictly ordered sample sizes. When
+    several groups tie for the minimum, changing which tied group is supplied
+    first can therefore change the realized statistic, while the theorem's
+    null calibration remains valid for every fixed reference choice.
+    """
+    groups = _multivariate_groups(samples, minimum_rows=3)
+    sizes = tuple(group.shape[0] for group in groups)
+    minimum_size = min(sizes)
+    reference_index = sizes.index(minimum_size)
+    ordered = (groups[reference_index],) + tuple(
+        group for index, group in enumerate(groups) if index != reference_index
+    )
+    scaled, _ = _globally_scaled_anchored_groups(ordered)
+    reference = scaled[0]
+    product_rows = tuple(
+        _pairwise_inner_products(_li_two_sample_vectors(reference, group))
+        for group in scaled[1:]
+    )
+    pairwise_sum = np.fromiter(
+        (
+            math.fsum(float(value) for value in coordinate)
+            for coordinate in zip(*product_rows, strict=True)
+        ),
+        dtype=np.float64,
+        count=product_rows[0].size,
+    )
+    return _li_studentized_result(
+        pairwise_sum,
+        method="Li fixed-small-sample high-dimensional ANOVA mean test (2023)",
+        data_name="samples",
+        alternative="at least one true mean vector differs",
+    )
+
+
+def _trace_covariance_square_u(values: NDArray[np.float64]) -> float:
+    """Li--Chen (2012), Equation (2.1), unbiased covariance-square trace.
+
+    This translation-invariant U-statistic is not the different finite-sample
+    leave-two-out expression displayed in Chen--Qin (2010).
+    """
+    n = values.shape[0]
+    gram = values @ values.T
+    np.fill_diagonal(gram, 0.0)
+    first = float(np.sum(gram * gram, dtype=np.float64))
+    row_sums = np.sum(gram, axis=1, dtype=np.float64)
+    row_squares = np.sum(gram * gram, axis=1, dtype=np.float64)
+    second = float(np.sum(row_sums * row_sums - row_squares, dtype=np.float64))
+    total = float(np.sum(row_sums, dtype=np.float64))
+    complement = total - 2.0 * row_sums[:, None] - 2.0 * row_sums[None, :] + 2.0 * gram
+    third = float(np.sum(gram * complement, dtype=np.float64))
+    nf = float(n)
+    return (
+        first / (nf * (nf - 1.0))
+        - 2.0 * second / (nf * (nf - 1.0) * (nf - 2.0))
+        + third / (nf * (nf - 1.0) * (nf - 2.0) * (nf - 3.0))
+    )
+
+
+def _trace_cross_covariance_u(
+    first: NDArray[np.float64], second: NDArray[np.float64]
+) -> float:
+    """Literal ordered-sum estimator of ``tr(Sigma1 @ Sigma2)``."""
+    n1 = first.shape[0]
+    n2 = second.shape[0]
+    cross = first @ second.T
+    squared = cross * cross
+    rows = np.sum(cross, axis=1, dtype=np.float64)
+    columns = np.sum(cross, axis=0, dtype=np.float64)
+    term1 = float(np.sum(squared, dtype=np.float64)) / (n1 * n2)
+    term2 = float(
+        np.sum(columns * columns - np.sum(squared, axis=0), dtype=np.float64)
+    ) / (n1 * n2 * (n1 - 1))
+    term3 = float(np.sum(rows * rows - np.sum(squared, axis=1), dtype=np.float64)) / (
+        n1 * n2 * (n2 - 1)
+    )
+    total = float(np.sum(cross, dtype=np.float64))
+    complement = total - rows[:, None] - columns[None, :] + cross
+    term4 = float(np.sum(cross * complement, dtype=np.float64)) / (
+        n1 * n2 * (n1 - 1) * (n2 - 1)
+    )
+    return float(term1 - term2 - term3 + term4)
+
+
+def _cq_unscaled_statistic(
+    first: NDArray[np.float64], second: NDArray[np.float64]
+) -> float:
+    """Evaluate Chen--Qin Equation (2.1) without diagonal Gram terms."""
+    n1 = first.shape[0]
+    n2 = second.shape[0]
+    sum1 = np.sum(first, axis=0, dtype=np.float64)
+    sum2 = np.sum(second, axis=0, dtype=np.float64)
+    within1 = (
+        float(np.dot(sum1, sum1)) - float(np.sum(first * first, dtype=np.float64))
+    ) / (n1 * (n1 - 1))
+    within2 = (
+        float(np.dot(sum2, sum2)) - float(np.sum(second * second, dtype=np.float64))
+    ) / (n2 * (n2 - 1))
+    cross = 2.0 * float(np.dot(sum1, sum2)) / (n1 * n2)
+    return float(within1 + within2 - cross)
+
+
+def cq_2samp(x: ArrayLike, y: ArrayLike) -> HypothesisTestResult:
+    """Perform the Chen--Qin dense high-dimensional two-sample mean test.
+
+    The two covariance matrices may differ. The Chen--Qin statistic is
+    studentized using the translation-invariant unbiased trace estimators
+    from Li--Chen (2012), Equations (2.1)--(2.2), rather than Chen--Qin's
+    different finite-sample leave-two-out estimate. At least four observations
+    are required in each group. The asymptotic normal calibration requires
+    the moment, factor, balance, and trace conditions in the validation ledger.
+    """
+    first, second = _multivariate_pair(x, y, minimum_rows=4)
+    (first_scaled, second_scaled), _ = _globally_scaled_anchored_groups((first, second))
+    statistic_unscaled = _cq_unscaled_statistic(first_scaled, second_scaled)
+    first_centered = first_scaled - np.mean(first_scaled, axis=0, dtype=np.float64)
+    second_centered = second_scaled - np.mean(second_scaled, axis=0, dtype=np.float64)
+    trace1 = _trace_covariance_square_u(first_centered)
+    trace2 = _trace_covariance_square_u(second_centered)
+    cross_trace = _trace_cross_covariance_u(first_centered, second_centered)
+    n1 = first.shape[0]
+    n2 = second.shape[0]
+    variance = (
+        2.0 * trace1 / (n1 * (n1 - 1))
+        + 2.0 * trace2 / (n2 * (n2 - 1))
+        + 4.0 * cross_trace / (n1 * n2)
+    )
+    _require_positive(variance, name="Chen-Qin null variance estimate")
+    statistic = statistic_unscaled / math.sqrt(variance)
+    return _mean_result(
+        statistic=statistic,
+        pvalue=float(stats.norm.sf(statistic)),
+        method="Chen-Qin two-sample high-dimensional mean test (2010)",
+        statistic_name="CQ",
+        data_name="x and y",
+        diagnostics=(
+            ("variance estimator", "Li-Chen (2012) unbiased trace U-statistics"),
+        ),
+    )
+
+
 def hotelling_1samp(
     x: ArrayLike, *, popmean: ArrayLike | None = None
 ) -> HypothesisTestResult:
@@ -654,10 +1009,10 @@ def hotelling_1samp(
         (values, null[None, :])
     )
     scaled = scaled_values - scaled_null
-    difference_scaled, covariance_scaled = _scaled_covariance(
-        scaled, np.ones(p, dtype=np.float64)
+    difference_scaled = np.mean(scaled, axis=0, dtype=np.float64)
+    quadratic = _hotelling_quadratic(
+        difference_scaled, scaled, name="the covariance estimate"
     )
-    quadratic = _positive_definite_quadratic(covariance_scaled, difference_scaled)
     statistic = n * quadratic
     numerator_df = float(p)
     denominator_df = float(n - p)
@@ -714,17 +1069,12 @@ def hotelling_2samp(
         raise ValueError("hotelling_2samp requires n_x + n_y to exceed p + 1")
 
     (first_scaled, second_scaled), _ = _feature_scaled_anchored_groups((first, second))
-    first_mean, first_covariance = _scaled_covariance(
-        first_scaled, np.ones(p, dtype=np.float64)
-    )
-    second_mean, second_covariance = _scaled_covariance(
-        second_scaled, np.ones(p, dtype=np.float64)
-    )
-    pooled_covariance = (
-        (first_size - 1) * first_covariance + (second_size - 1) * second_covariance
-    ) / (total_size - 2)
+    first_mean = np.mean(first_scaled, axis=0, dtype=np.float64)
+    second_mean = np.mean(second_scaled, axis=0, dtype=np.float64)
     difference = first_mean - second_mean
-    quadratic = _positive_definite_quadratic(pooled_covariance, difference)
+    quadratic = _hotelling_quadratic(
+        difference, first_scaled, second_scaled, name="the pooled covariance estimate"
+    )
     statistic = first_size * second_size / total_size * quadratic
     numerator_df = float(p)
     denominator_df = float(total_size - p - 1)
@@ -743,14 +1093,13 @@ def hotelling_2samp(
 
 
 def _dempster_degrees_of_freedom(
-    covariance: NDArray[np.float64], within_df: int
+    trace: float, trace_squared: float, within_df: int
 ) -> tuple[float, float]:
     if within_df <= 1:
         raise ValueError(
             "Dempster's calibration requires at least two within-group degrees of freedom"
         )
-    trace = _require_positive(float(np.trace(covariance)), name="covariance trace")
-    trace_squared = _trace_square(covariance)
+    trace = _require_positive(trace, name="covariance trace")
     correction = trace_squared - trace * trace / within_df
     estimate_trace_sigma_squared = (
         within_df * within_df / ((within_df - 1) * (within_df + 2)) * correction
@@ -781,10 +1130,10 @@ def dempster_1samp(
     null = _null_mean(popmean, feature_count)
     scaled, _ = _scaled_centered_values(values, null)
     difference = np.mean(scaled, axis=0, dtype=np.float64)
-    covariance = _sample_covariance(scaled)
-    trace = _require_positive(float(np.trace(covariance)), name="covariance trace")
+    trace, trace_squared = _covariance_trace_moments(scaled)
+    trace = _require_positive(trace, name="covariance trace")
     statistic = sample_size * float(np.dot(difference, difference)) / trace
-    df = _dempster_degrees_of_freedom(covariance, sample_size - 1)
+    df = _dempster_degrees_of_freedom(trace, trace_squared, sample_size - 1)
     pvalue = float(stats.f.sf(statistic, *df))
     return _mean_result(
         statistic=statistic,
@@ -811,16 +1160,26 @@ def dempster_2samp(x: ArrayLike, y: ArrayLike) -> HypothesisTestResult:
             "Dempster's calibration requires at least two within-group degrees of freedom"
         )
     (first_scaled, second_scaled), _ = _globally_scaled_anchored_groups((first, second))
-    first_covariance = _sample_covariance(first_scaled)
-    second_covariance = _sample_covariance(second_scaled)
-    pooled = (
-        (first_size - 1) * first_covariance + (second_size - 1) * second_covariance
-    ) / within_df
-    trace = _require_positive(float(np.trace(pooled)), name="pooled covariance trace")
+    first_trace, first_trace_squared = _covariance_trace_moments(first_scaled)
+    second_trace, second_trace_squared = _covariance_trace_moments(second_scaled)
+    # For the pooled squared trace, the cross term is evaluated from a
+    # rectangular row Gram rather than a dense feature covariance.
+    cross_trace = _trace_sample_covariance_product(first_scaled, second_scaled)
+    first_weight = (first_size - 1) / within_df
+    second_weight = (second_size - 1) / within_df
+    trace = _require_positive(
+        first_weight * first_trace + second_weight * second_trace,
+        name="pooled covariance trace",
+    )
+    trace_squared = (
+        first_weight**2 * first_trace_squared
+        + second_weight**2 * second_trace_squared
+        + 2.0 * first_weight * second_weight * cross_trace
+    )
     difference = np.mean(first_scaled, axis=0) - np.mean(second_scaled, axis=0)
     multiplier = first_size * second_size / (first_size + second_size)
     statistic = multiplier * float(np.dot(difference, difference)) / trace
-    df = _dempster_degrees_of_freedom(pooled, within_df)
+    df = _dempster_degrees_of_freedom(trace, trace_squared, within_df)
     pvalue = float(stats.f.sf(statistic, *df))
     return _mean_result(
         statistic=statistic,
@@ -835,8 +1194,9 @@ def dempster_2samp(x: ArrayLike, y: ArrayLike) -> HypothesisTestResult:
 
 def _bs_standardized_statistic(
     difference: NDArray[np.float64],
-    covariance: NDArray[np.float64],
     *,
+    trace: float,
+    trace_squared: float,
     mean_multiplier: float,
     within_df: int,
 ) -> float:
@@ -844,8 +1204,6 @@ def _bs_standardized_statistic(
         raise ValueError(
             "Bai-Saranadasa calibration requires at least two within-group degrees of freedom"
         )
-    trace = float(np.trace(covariance))
-    trace_squared = _trace_square(covariance)
     correction = trace_squared - trace * trace / within_df
     variance = (
         2.0
@@ -870,10 +1228,11 @@ def bs_1samp(x: ArrayLike, *, popmean: ArrayLike | None = None) -> HypothesisTes
     null = _null_mean(popmean, feature_count)
     scaled, _ = _scaled_centered_values(values, null)
     difference = np.mean(scaled, axis=0)
-    covariance = _sample_covariance(scaled)
+    trace, trace_squared = _covariance_trace_moments(scaled)
     statistic = _bs_standardized_statistic(
         difference,
-        covariance,
+        trace=trace,
+        trace_squared=trace_squared,
         mean_multiplier=float(sample_size),
         within_df=sample_size - 1,
     )
@@ -891,14 +1250,22 @@ def bs_2samp(x: ArrayLike, y: ArrayLike) -> HypothesisTestResult:
     second_size = second.shape[0]
     within_df = first_size + second_size - 2
     (first_scaled, second_scaled), _ = _globally_scaled_anchored_groups((first, second))
-    covariance = (
-        (first_size - 1) * _sample_covariance(first_scaled)
-        + (second_size - 1) * _sample_covariance(second_scaled)
-    ) / within_df
+    first_trace, first_trace_squared = _covariance_trace_moments(first_scaled)
+    second_trace, second_trace_squared = _covariance_trace_moments(second_scaled)
+    cross_trace = _trace_sample_covariance_product(first_scaled, second_scaled)
+    first_weight = (first_size - 1) / within_df
+    second_weight = (second_size - 1) / within_df
+    trace = first_weight * first_trace + second_weight * second_trace
+    trace_squared = (
+        first_weight**2 * first_trace_squared
+        + second_weight**2 * second_trace_squared
+        + 2.0 * first_weight * second_weight * cross_trace
+    )
     difference = np.mean(first_scaled, axis=0) - np.mean(second_scaled, axis=0)
     statistic = _bs_standardized_statistic(
         difference,
-        covariance,
+        trace=trace,
+        trace_squared=trace_squared,
         mean_multiplier=first_size * second_size / (first_size + second_size),
         within_df=within_df,
     )
@@ -912,8 +1279,9 @@ def bs_2samp(x: ArrayLike, y: ArrayLike) -> HypothesisTestResult:
 
 def _sd_standardized_statistic(
     difference: NDArray[np.float64],
-    covariance: NDArray[np.float64],
     *,
+    diagonal: NDArray[np.float64],
+    trace_r2: float,
     mean_multiplier: float,
     within_df: int,
 ) -> float:
@@ -921,13 +1289,9 @@ def _sd_standardized_statistic(
         raise ValueError(
             "Srivastava-Du calibration requires more than two within-group degrees of freedom"
         )
-    diagonal = np.diag(covariance)
     if np.any(diagonal <= 0.0):
         raise ValueError("every feature must have positive pooled variance")
-    inverse_sd = 1.0 / np.sqrt(diagonal)
-    correlation = covariance * np.outer(inverse_sd, inverse_sd)
-    trace_r2 = _trace_square(correlation)
-    feature_count = covariance.shape[0]
+    feature_count = diagonal.size
     finite_sample = 1.0 + trace_r2 / feature_count**1.5
     variance = 2.0 * (trace_r2 - feature_count**2 / within_df) * finite_sample
     _require_positive(variance, name="Srivastava-Du variance estimate")
@@ -941,10 +1305,19 @@ def sd_1samp(x: ArrayLike, *, popmean: ArrayLike | None = None) -> HypothesisTes
     values = validate_2d_sample(x, name="x", minimum_rows=4)
     sample_size, feature_count = values.shape
     null = _null_mean(popmean, feature_count)
-    scaled, _ = _scaled_centered_values(values, null)
+    # The Srivastava--Du statistic is invariant to a separate positive change
+    # of units in every feature.  Apply that invariance before forming sample
+    # variances so a valid small-scale feature is not rounded to zero merely
+    # because another column is close to the top of the float64 range.
+    (scaled_values, scaled_null), _ = _feature_scaled_anchored_groups(
+        (values, null[None, :])
+    )
+    scaled = scaled_values - scaled_null
+    diagonal, trace_r2 = _pooled_diagonal_and_correlation_trace_square((scaled,))
     statistic = _sd_standardized_statistic(
         np.mean(scaled, axis=0),
-        _sample_covariance(scaled),
+        diagonal=diagonal,
+        trace_r2=trace_r2,
         mean_multiplier=float(sample_size),
         within_df=sample_size - 1,
     )
@@ -961,14 +1334,14 @@ def sd_2samp(x: ArrayLike, y: ArrayLike) -> HypothesisTestResult:
     first_size = first.shape[0]
     second_size = second.shape[0]
     within_df = first_size + second_size - 2
-    (first_scaled, second_scaled), _ = _globally_scaled_anchored_groups((first, second))
-    covariance = (
-        (first_size - 1) * _sample_covariance(first_scaled)
-        + (second_size - 1) * _sample_covariance(second_scaled)
-    ) / within_df
+    (first_scaled, second_scaled), _ = _feature_scaled_anchored_groups((first, second))
+    diagonal, trace_r2 = _pooled_diagonal_and_correlation_trace_square(
+        (first_scaled, second_scaled)
+    )
     statistic = _sd_standardized_statistic(
         np.mean(first_scaled, axis=0) - np.mean(second_scaled, axis=0),
-        covariance,
+        diagonal=diagonal,
+        trace_r2=trace_r2,
         mean_multiplier=first_size * second_size / (first_size + second_size),
         within_df=within_df,
     )
@@ -981,7 +1354,8 @@ def sd_2samp(x: ArrayLike, y: ArrayLike) -> HypothesisTestResult:
 
 
 def _behrens_fisher_inputs(
-    x: ArrayLike, y: ArrayLike
+    x: ArrayLike,
+    y: ArrayLike,
 ) -> tuple[
     NDArray[np.float64],
     NDArray[np.float64],
@@ -992,23 +1366,33 @@ def _behrens_fisher_inputs(
     int,
 ]:
     first, second = _multivariate_pair(x, y)
-    (first_scaled, second_scaled), _ = _globally_scaled_anchored_groups((first, second))
+    (first_scaled, second_scaled), _ = _feature_scaled_anchored_groups((first, second))
     first_size = first.shape[0]
     second_size = second.shape[0]
     difference = np.mean(first_scaled, axis=0) - np.mean(second_scaled, axis=0)
-    first_mean_covariance = _sample_covariance(first_scaled) / first_size
-    second_mean_covariance = _sample_covariance(second_scaled) / second_size
-    total_mean_covariance = first_mean_covariance + second_mean_covariance
+    weighted_residuals = np.vstack(
+        tuple(
+            (group - np.mean(group, axis=0))
+            / math.sqrt(group.shape[0] * (group.shape[0] - 1))
+            for group in (first_scaled, second_scaled)
+        )
+    )
+    left, singular_values, right, scales = _residual_svd(
+        weighted_residuals, name="estimated covariance of the mean difference"
+    )
+    # The weighted residual Gram is Sx/nx + Sy/ny. Its SVD whitens that
+    # covariance directly, preserving every affine-invariant quadratic and
+    # trace weight without forming an ill-conditioned normal-equations matrix.
+    whitened_difference = (right @ (difference / scales)) / singular_values
+    first_mean_covariance = left[:first_size].T @ left[:first_size]
+    second_mean_covariance = left[first_size:].T @ left[first_size:]
+    total_mean_covariance = np.eye(first.shape[1], dtype=np.float64)
     return (
-        difference,
+        whitened_difference,
         first_mean_covariance,
         second_mean_covariance,
         total_mean_covariance,
-        _solve_positive_definite(
-            total_mean_covariance,
-            difference,
-            name="estimated covariance of the mean difference",
-        ),
+        whitened_difference.copy(),
         first_size,
         second_size,
     )
@@ -1088,17 +1472,23 @@ def yao_2samp(x: ArrayLike, y: ArrayLike) -> HypothesisTestResult:
 
 def nvm_2samp(x: ArrayLike, y: ArrayLike) -> HypothesisTestResult:
     """Perform the Nel-Van der Merwe multivariate Behrens-Fisher test."""
-    (
-        difference,
-        first_covariance,
-        second_covariance,
-        total_covariance,
-        solved,
-        first_size,
-        second_size,
-    ) = _behrens_fisher_inputs(x, y)
-    feature_count = difference.size
+    first, second = _multivariate_pair(x, y)
+    first_size = first.shape[0]
+    second_size = second.shape[0]
+    feature_count = first.shape[1]
+
+    # T2 itself is affine-invariant, even though Nel--Van der Merwe's
+    # trace-based degrees-of-freedom approximation is not.  Evaluate the
+    # quadratic form after a harmless diagonal normalization, while retaining
+    # one common scale for the trace formula so its unit dependence is not
+    # changed.
+    difference, _, _, _, solved, _, _ = _behrens_fisher_inputs(first, second)
     statistic = _require_nonnegative(float(np.dot(difference, solved)), name="T2")
+
+    (first_scaled, second_scaled), _ = _globally_scaled_anchored_groups((first, second))
+    first_covariance = _sample_covariance(first_scaled) / first_size
+    second_covariance = _sample_covariance(second_scaled) / second_size
+    total_covariance = first_covariance + second_covariance
     numerator = _trace_square(total_covariance) + float(np.trace(total_covariance)) ** 2
     denominator = (
         _trace_square(first_covariance) + float(np.trace(first_covariance)) ** 2
@@ -1164,6 +1554,14 @@ def ky_2samp(x: ArrayLike, y: ArrayLike) -> HypothesisTestResult:
 
 def johansen_2samp(x: ArrayLike, y: ArrayLike) -> HypothesisTestResult:
     """Perform Johansen's Welch-James multivariate mean test."""
+    first, second = _multivariate_pair(x, y)
+    scaled_groups, _ = _feature_scaled_anchored_groups((first, second))
+    for group, name in zip(
+        scaled_groups,
+        ("x covariance contribution", "y covariance contribution"),
+        strict=True,
+    ):
+        _require_full_covariance_rank(group, name=name)
     (
         difference,
         first_covariance,
@@ -1175,34 +1573,18 @@ def johansen_2samp(x: ArrayLike, y: ArrayLike) -> HypothesisTestResult:
     ) = _behrens_fisher_inputs(x, y)
     feature_count = difference.size
     statistic = _require_nonnegative(float(np.dot(difference, solved)), name="T2")
-    identity = np.eye(feature_count, dtype=np.float64)
-    first_inverse = _solve_positive_definite(
-        first_covariance,
-        identity,
-        name="x covariance contribution",
-    )
-    second_inverse = _solve_positive_definite(
-        second_covariance,
-        identity,
-        name="y covariance contribution",
-    )
-    inverse_sum = first_inverse + second_inverse
-    try:
-        first_a = identity - np.linalg.solve(inverse_sum, first_inverse)
-        second_a = identity - np.linalg.solve(inverse_sum, second_inverse)
-    except np.linalg.LinAlgError as exc:
-        raise ValueError("Johansen covariance weights could not be evaluated") from exc
+    # In the Sx/nx + Sy/ny whitened coordinates, the Welch--James weights
+    # Ci @ (C1+C2)^(-1) are simply Ci. This avoids inverting each group
+    # covariance while retaining the same traces and correction.
+    first_a = first_covariance
+    second_a = second_covariance
     d_value = 0.5 * (
         (_trace_square(first_a) + float(np.trace(first_a)) ** 2) / (first_size - 1)
         + (_trace_square(second_a) + float(np.trace(second_a)) ** 2) / (second_size - 1)
     )
     _require_positive(d_value, name="Johansen correction")
     denominator_df = feature_count * (feature_count + 2.0) / (3.0 * d_value)
-    adjustment = (
-        feature_count
-        + 2.0 * d_value
-        - 6.0 * d_value / (feature_count * (feature_count - 1.0) + 2.0)
-    )
+    adjustment = feature_count + 2.0 * d_value - 6.0 * d_value / (feature_count + 2.0)
     return _behrens_fisher_result(
         statistic,
         feature_count,
@@ -1232,23 +1614,21 @@ def schott_ksamp(*samples: ArrayLike) -> HypothesisTestResult:
             "Schott's calibration requires more than one error degree of freedom"
         )
     means = tuple(np.mean(group, axis=0, dtype=np.float64) for group in scaled)
-    covariances = tuple(_sample_covariance(group) for group in scaled)
-    error = sum(
-        (group.shape[0] - 1) * covariance
-        for group, covariance in zip(scaled, covariances, strict=True)
-    )
+    centered = tuple(group - mean for group, mean in zip(scaled, means, strict=True))
+    stacked_centered = np.vstack(centered)
+    trace_error = float(np.sum(stacked_centered * stacked_centered, dtype=np.float64))
+    trace_error_squared = _cross_product_trace_square(stacked_centered)
     grand_mean = (
         sum(size * mean for size, mean in zip(sizes, means, strict=True)) / total_size
     )
-    hypothesis = sum(
-        size * np.outer(mean - grand_mean, mean - grand_mean)
+    trace_hypothesis = math.fsum(
+        float(size) * float(np.dot(mean - grand_mean, mean - grand_mean))
         for size, mean in zip(sizes, means, strict=True)
     )
-    statistic = (
-        float(np.trace(hypothesis)) / hypothesis_df - float(np.trace(error)) / error_df
-    ) / math.sqrt(total_size - 1.0)
-    trace_error = float(np.trace(error))
-    a_value = (_trace_square(error) - trace_error * trace_error / error_df) / (
+    statistic = (trace_hypothesis / hypothesis_df - trace_error / error_df) / math.sqrt(
+        total_size - 1.0
+    )
+    a_value = (trace_error_squared - trace_error * trace_error / error_df) / (
         (error_df + 2.0) * (error_df - 1.0)
     )
     variance = 2.0 * a_value / (hypothesis_df * error_df)
@@ -1303,7 +1683,6 @@ def _cph_statistic(groups: tuple[NDArray[np.float64], ...]) -> float:
 def _cph_variance_original(groups: tuple[NDArray[np.float64], ...]) -> float:
     sizes = np.asarray([group.shape[0] for group in groups], dtype=np.float64)
     total_size = float(np.sum(sizes))
-    covariances = tuple(_sample_covariance(group) for group in groups)
     diagonal_term = 0.0
     for group, size in zip(groups, sizes, strict=True):
         # Cao, Park, and He define n_l1 = floor(n_l / 2) + 1 and
@@ -1315,28 +1694,26 @@ def _cph_variance_original(groups: tuple[NDArray[np.float64], ...]) -> float:
             raise ValueError(
                 "the original CPH variance estimator requires at least five observations per group"
             )
-        first_covariance = _sample_covariance(group[:first_size])
-        second_covariance = _sample_covariance(group[first_size:])
         diagonal_term += (
             size
             * (total_size - size) ** 2
             / (size - 1.0)
-            * float(np.trace(first_covariance @ second_covariance))
+            * _trace_sample_covariance_product(group[:first_size], group[first_size:])
         )
     cross_term = 0.0
-    for first_index, (first_size, first_covariance) in enumerate(
-        zip(sizes[:-1], covariances[:-1], strict=True)
+    for first_index, (first_size, first_group) in enumerate(
+        zip(sizes[:-1], groups[:-1], strict=True)
     ):
-        for second_size, second_covariance in zip(
+        for second_size, second_group in zip(
             sizes[first_index + 1 :],
-            covariances[first_index + 1 :],
+            groups[first_index + 1 :],
             strict=True,
         ):
             cross_term += (
                 2.0
                 * first_size
                 * second_size
-                * float(np.trace(first_covariance @ second_covariance))
+                * _trace_sample_covariance_product(first_group, second_group)
             )
     return 2.0 * (diagonal_term + cross_term) / total_size**2
 
@@ -1344,15 +1721,13 @@ def _cph_variance_original(groups: tuple[NDArray[np.float64], ...]) -> float:
 def _cph_variance_hu(groups: tuple[NDArray[np.float64], ...]) -> float:
     sizes = np.asarray([group.shape[0] for group in groups], dtype=np.float64)
     total_size = float(np.sum(sizes))
-    covariances = tuple(_sample_covariance(group) for group in groups)
     diagonal_term = 0.0
-    for size, covariance in zip(sizes, covariances, strict=True):
+    for size, group in zip(sizes, groups, strict=True):
         if size <= 2:
             raise ValueError(
                 "the Hu CPH variance estimator requires at least three observations per group"
             )
-        trace = float(np.trace(covariance))
-        trace_squared = _trace_square(covariance)
+        trace, trace_squared = _covariance_trace_moments(group)
         diagonal_term += (
             size
             * (total_size - size) ** 2
@@ -1361,19 +1736,19 @@ def _cph_variance_hu(groups: tuple[NDArray[np.float64], ...]) -> float:
             * (trace_squared - trace * trace / (size - 1.0))
         )
     cross_term = 0.0
-    for first_index, (first_size, first_covariance) in enumerate(
-        zip(sizes[:-1], covariances[:-1], strict=True)
+    for first_index, (first_size, first_group) in enumerate(
+        zip(sizes[:-1], groups[:-1], strict=True)
     ):
-        for second_size, second_covariance in zip(
+        for second_size, second_group in zip(
             sizes[first_index + 1 :],
-            covariances[first_index + 1 :],
+            groups[first_index + 1 :],
             strict=True,
         ):
             cross_term += (
                 2.0
                 * first_size
                 * second_size
-                * float(np.trace(first_covariance @ second_covariance))
+                * _trace_sample_covariance_product(first_group, second_group)
             )
     return 2.0 * (diagonal_term + cross_term) / total_size**2
 
@@ -1488,27 +1863,31 @@ def _projected_hotelling_statistic(
     second: NDArray[np.float64],
     projection: NDArray[np.float64],
 ) -> float:
+    # Identical allocations must use identical reduction orders, including
+    # when a random permutation only reorders rows within either group.
+    first, second = _canonical_randomization_pair(first, second)
     first_size = first.shape[0]
     second_size = second.shape[0]
-    within_df = first_size + second_size - 2
-    difference = np.mean(first, axis=0) - np.mean(second, axis=0)
-    pooled = (
-        (first_size - 1) * _sample_covariance(first)
-        + (second_size - 1) * _sample_covariance(second)
-    ) / within_df
-    projected_difference = projection.T @ difference
-    projected_covariance = projection.T @ pooled @ projection
-    solved = _solve_positive_definite(
-        projected_covariance,
-        projected_difference,
+    # Projection commutes with centering and covariance formation.  Project
+    # the observations first so the random-projection test never constructs
+    # either sample's ambient p-by-p covariance matrix.
+    if projection.shape[0] == projection.shape[1]:
+        # An invertible full-dimensional projection leaves Hotelling T2
+        # unchanged. Avoid numerically mixing features with disparate units
+        # only to invert that same mixing immediately afterward.
+        _residual_svd(projection, name="Gaussian projection")
+        first_projected, second_projected = first, second
+    else:
+        first_projected = first @ projection
+        second_projected = second @ projection
+    difference = np.mean(first_projected, axis=0) - np.mean(second_projected, axis=0)
+    quadratic = _hotelling_quadratic(
+        difference,
+        first_projected,
+        second_projected,
         name="projected pooled covariance",
     )
-    return float(
-        first_size
-        * second_size
-        / (first_size + second_size)
-        * float(np.dot(projected_difference, solved))
-    )
+    return float(first_size * second_size / (first_size + second_size) * quadratic)
 
 
 def ljw_2samp(
@@ -1540,12 +1919,19 @@ def ljw_2samp(
         choices=("asymptotic", "monte-carlo"),
     )
     generator = _random_generator(rng)
-    (first_scaled, second_scaled), _ = _globally_scaled_anchored_groups((first, second))
     within_df = first.shape[0] + second.shape[0] - 2
     projected_dimension = within_df // 2
     feature_count = first.shape[1]
     if feature_count < projected_dimension:
         raise ValueError("ljw_2samp requires p >= floor((n_x + n_y - 2) / 2)")
+    if feature_count == projected_dimension:
+        (first_scaled, second_scaled), _ = _feature_scaled_anchored_groups(
+            (first, second)
+        )
+    else:
+        (first_scaled, second_scaled), _ = _globally_scaled_anchored_groups(
+            (first, second)
+        )
     projection = generator.standard_normal((feature_count, projected_dimension))
     observed = _projected_hotelling_statistic(
         first_scaled,
@@ -1580,7 +1966,7 @@ def ljw_2samp(
             combined[order[first_size:]],
             projection,
         )
-        exceedances += int(permuted >= observed)
+        exceedances += int(permuted >= upper_tail_threshold(observed))
     pvalue, standard_error, interval = monte_carlo_calibration(
         exceedances,
         resamples,
@@ -1606,14 +1992,22 @@ def _subspace_hotelling_statistic(
     second: NDArray[np.float64],
     subspaces: tuple[NDArray[np.intp], ...],
 ) -> float:
-    identity_projection = np.eye(first.shape[1], dtype=np.float64)
+    first, second = _canonical_randomization_pair(first, second)
+    first_size = first.shape[0]
+    second_size = second.shape[0]
+    multiplier = first_size * second_size / (first_size + second_size)
     statistics = np.empty(len(subspaces), dtype=np.float64)
     for index, columns in enumerate(subspaces):
-        statistics[index] = _projected_hotelling_statistic(
-            first,
-            second,
-            identity_projection[:, columns],
+        first_selected = first[:, columns]
+        second_selected = second[:, columns]
+        difference = np.mean(first_selected, axis=0) - np.mean(second_selected, axis=0)
+        quadratic = _hotelling_quadratic(
+            difference,
+            first_selected,
+            second_selected,
+            name="subspace pooled covariance",
         )
+        statistics[index] = multiplier * quadratic
     return float(np.mean(statistics))
 
 
@@ -1673,7 +2067,7 @@ def thulin_2samp(
             combined[order[first_size:]],
             subspaces,
         )
-        exceedances += int(permuted >= observed)
+        exceedances += int(permuted >= upper_tail_threshold(observed))
     pvalue, standard_error, interval = monte_carlo_calibration(
         exceedances,
         resamples,
@@ -1690,6 +2084,77 @@ def thulin_2samp(
             ("subspace dimension", selected_dimension),
             ("subspaces", subspace_count),
         ),
+        n_resamples=resamples,
+        exceedances=exceedances,
+        monte_carlo_standard_error=standard_error,
+        tail_probability_interval=interval,
+    )
+
+
+def _xy_2samp(
+    x: ArrayLike,
+    y: ArrayLike,
+    *,
+    n_resamples: int = 999,
+    rng: np.random.Generator | int | np.integer | None = None,
+) -> ResamplingTestResult:
+    """Evaluate the validation-blocked Xue--Yao mean test.
+
+    The statistic is the maximum absolute coordinate of the normalized mean
+    difference.  Its critical law is estimated by the Gaussian multiplier
+    bootstrap in Xue and Yao (2020).  Rows and group labels are canonicalized
+    before a seeded bootstrap, making integer-seed results reproducible under
+    row reordering and sample exchange without touching global RNG state.
+    It remains private because the requested 999-draw Monte Carlo calibration
+    is too discrete to satisfy the 0.01 release gate and fresh null simulations
+    were conservative in practical regimes.
+    """
+    first, second = _multivariate_pair(x, y)
+    first, second = _canonical_randomization_pair(first, second)
+    resamples = _positive_integer(n_resamples, name="n_resamples")
+    generator = _random_generator(rng)
+    (first_scaled, second_scaled), scale = _globally_scaled_anchored_groups(
+        (first, second)
+    )
+    first_size = first.shape[0]
+    second_size = second.shape[0]
+    root_ratio = math.sqrt(first_size / second_size)
+    observed_scaled = math.sqrt(first_size) * float(
+        np.max(
+            np.abs(
+                np.mean(first_scaled, axis=0, dtype=np.float64)
+                - np.mean(second_scaled, axis=0, dtype=np.float64)
+            )
+        )
+    )
+    first_centered = first_scaled - np.mean(first_scaled, axis=0, dtype=np.float64)
+    second_centered = second_scaled - np.mean(second_scaled, axis=0, dtype=np.float64)
+    exceedances = 0
+    completed = 0
+    # Batching keeps the kernel in optimized matrix multiplication while
+    # bounding temporary storage by roughly ``256 * (n_x + n_y + p)`` floats.
+    while completed < resamples:
+        batch_size = min(256, resamples - completed)
+        multipliers = generator.standard_normal((batch_size, first_size + second_size))
+        first_sums = (
+            multipliers[:, :first_size] @ first_centered / math.sqrt(first_size)
+        )
+        second_sums = (
+            multipliers[:, first_size:] @ second_centered / math.sqrt(second_size)
+        )
+        bootstrap = np.max(np.abs(first_sums - root_ratio * second_sums), axis=1)
+        exceedances += int(np.count_nonzero(bootstrap >= observed_scaled))
+        completed += batch_size
+    pvalue, standard_error, interval = monte_carlo_calibration(exceedances, resamples)
+    return ResamplingTestResult(
+        statistic=_rescale(observed_scaled, scale),
+        pvalue=pvalue,
+        method="Xue-Yao distribution/correlation-free two-sample mean test (2020)",
+        alternative="true mean vectors differ",
+        data_name="x and y",
+        statistic_name="T infinity",
+        calibration="Gaussian multiplier bootstrap",
+        diagnostics=(("bootstrap draws", resamples),),
         n_resamples=resamples,
         exceedances=exceedances,
         monte_carlo_standard_error=standard_error,
@@ -1937,7 +2402,7 @@ def _lyl_centered_variance(values: NDArray[np.float64]) -> float:
     return component
 
 
-def lyl_2samp(
+def maximum_pairwise_bayes_factor_2samp(
     x: ArrayLike,
     y: ArrayLike,
     *,
@@ -1959,7 +2424,9 @@ def lyl_2samp(
     """
     first, second = _multivariate_pair(x, y)
     if first.shape[1] < 2:
-        raise ValueError("lyl_2samp requires at least two features")
+        raise ValueError(
+            "maximum_pairwise_bayes_factor_2samp requires at least two features"
+        )
     shape = validate_real_scalar(a0, name="a0")
     prior_scale = validate_real_scalar(b0, name="b0")
     exponent = validate_real_scalar(alpha, name="alpha")

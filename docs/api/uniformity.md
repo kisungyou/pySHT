@@ -6,8 +6,18 @@ as part of the null hypothesis, not estimated from the data.
 
 | Question | Function |
 |---|---|
+| Is the complete nearest-neighbor geometry compatible with uniformity? | `ehy` |
 | Do squared interpoint distances have their uniform-null moments? | `ym_interpoint` |
 | Do coordinatewise normal quantiles have mean zero? | `ym_quantile` |
+
+`ehy` implements the Ebner--Henze--Yukich statistic. Both `alpha` and
+`n_neighbors` are required because they affect power and must be fixed before
+testing. Here `n_neighbors=J` means that the score sums the contributions from
+each of the first $J$ neighbors, not only the $J$th distance. The supported
+domain is $\alpha>0$, $\alpha\ne1$, and $1\le J<n$. It rejects in the lower
+tail for $0<\alpha<1$ and in the upper tail for $\alpha>1$. Unlike the older
+Yang--Modarres interpoint routine, EHY is also defined for one-dimensional
+rectangles.
 
 `ym_interpoint` provides the Yang--Modarres `q1`, `q2`, and `q3` statistics.
 Parametric Monte Carlo calibration is the finite-sample default. The optional
@@ -24,6 +34,8 @@ infinite normal quantiles and are rejected rather than clipped.
 See the [rectangular-uniformity validation
 ledger](../validation/uniformity.md) for the formulas, boundary policy, and
 calibration audit.
+See the method-specific [EHY rectangular ledger](../validation/ehy-rectangular.md)
+for its primary equations and release gates.
 
 ## Functions
 

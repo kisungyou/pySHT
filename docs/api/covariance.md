@@ -15,10 +15,12 @@ known-zero-mean model and uses observations exactly as supplied.
 | Design and working assumptions | Function | R routine |
 |---|---|---|
 | One sample; Gaussian; randomized one-dimensional projections | `wl_1samp` | `cov1.2015WL` |
+| One sample; high-dimensional identity against a known covariance | `czz_identity_1samp` | -- |
+| One sample; high-dimensional sphericity with unknown scale | `czz_sphericity_1samp` | -- |
 | Two samples; high-dimensional factor model with finite eighth moments; dense differences | `lc_2samp` | `cov2.2012LC` |
 | Two samples; high-dimensional tails and sparse entrywise differences | `clx_2samp` | `cov2.2013CLX` |
 | Two samples; Gaussian; randomized projected variance ratios | `wl_2samp` | `cov2.2015WL` |
-| Two samples; known zero means; Gaussian; sparse conditional-regression differences; Bayesian evidence | `lyl_2samp` | `cov2.mxPBF` |
+| Two samples; known zero means; Gaussian; sparse conditional-regression differences; Bayesian evidence | `maximum_pairwise_bayes_factor_2samp` | `cov2.mxPBF` |
 | Several samples; Gaussian; fixed dimension and invertible pooled covariance | `schott_2001_ksamp` | `covk.2001Schott` |
 | Several samples; Gaussian; dimension grows with sample sizes | `schott_2007_ksamp` | `covk.2007Schott` |
 
@@ -29,6 +31,19 @@ ledger](../validation/covariance.md) records the exact formulas, finite-sample
 audits, and limitations.
 
 ## One-sample tests
+
+```{eval-rst}
+.. autofunction:: czz_identity_1samp
+```
+
+```{eval-rst}
+.. autofunction:: czz_sphericity_1samp
+```
+
+Both CZZ procedures use unbiased order-four trace estimators and therefore
+require at least four observations. The identity test accepts a positive-
+definite `popcov`; the sphericity test treats the unknown common variance as a
+nuisance parameter and is invariant to a common change of measurement units.
 
 The corrected Fisher implementation is withheld from 0.1.0 because its former
 20,000-run evidence was not reproducible through the public path and smaller
@@ -76,7 +91,7 @@ gate passed at `N1=300, N2=360, p=30, n_projections=50`; the smaller
 `N1=100, N2=120` regime failed and is not advertised as calibrated.
 
 ```{eval-rst}
-.. autofunction:: lyl_2samp
+.. autofunction:: maximum_pairwise_bayes_factor_2samp
 ```
 
 This procedure returns a `BayesFactorTestResult`. Its primary statistic is the
@@ -122,3 +137,13 @@ integer seed when an analysis must be replayed.
 The LYL output is evidence on a different scale: positive log Bayes factors
 favor a pairwise alternative over its null under the selected priors. It must
 not be interpreted as `-log(p)`.
+
+## Validation-blocked research candidates
+
+Yu–Li–Xue’s Fisher combination has a private equation-audit implementation,
+but no public `ylx_2samp` callable: its required joint component-independence
+and 20,000-dataset size gate is incomplete. Jiang–Wang–Jiang–Wang–Zhang’s
+random-integration test has no callable because its primary-equation and
+calibration audit is incomplete. The [covariance validation
+ledger](../validation/covariance.md) records the precise blockers; neither
+method silently falls back to a different test.

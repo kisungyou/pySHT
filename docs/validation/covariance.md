@@ -1,7 +1,8 @@
 # Covariance tests: formula and validation ledger
 
-This ledger covers the seven public functions in `pysht.covariance` and one
-withheld Fisher implementation. The
+This ledger covers the nine public functions in `pysht.covariance`, one
+withheld Fisher implementation, and two correctness-gated research
+candidates. The
 pinned SHT 0.1.9 source was inspected for migration, but primary-paper
 equations, intentionally literal implementations, algebraic invariants, and
 null simulations are the correctness oracles.
@@ -71,6 +72,74 @@ justified. Those are PDF pages 36--37 in the repository copy. See
 [Fisher (2009)](https://open.clemson.edu/all_dissertations/486/).
 
 Primary source: {cite:t}`fisher-covariance-2012`.
+
+## Chen--Zhang--Zhong identity and sphericity tests
+
+Let $N$ be the number of rows, $p$ the number of features, and $X_i$ the
+observations after centering. For identity testing, a supplied positive-
+definite null covariance is first removed by a Cholesky solve, so the null is
+$\Sigma=I_p$. Chen, Zhang, and Zhong's unbiased estimators are
+
+$$
+T_1=\frac{1}{N-1}\sum_i X_i^T X_i,
+$$
+
+and the order-four estimator $T_2$ of
+$\operatorname{tr}(\Sigma^2)$, evaluated by the same exact mutually-distinct-
+index Gram identities used by the Li--Chen oracle. The reported identity
+statistic is
+
+$$
+\frac{N}{2}\left(\frac{T_2}{p}-\frac{2T_1}{p}+1\right),
+$$
+
+while the scale-free sphericity statistic is
+
+$$
+\frac{N}{2}\left(\frac{pT_2}{T_1^2}-1\right).
+$$
+
+Both use an upper standard-normal limit. Literal four-loop fixtures reproduce
+$T_2$. The identity fixture verifies equivalence after simultaneously
+transforming the data and `popcov`; the sphericity fixture covers row order,
+translation, orthogonal rotation, and scales through $10^{130}$. At least four
+rows and two features are required. Non-positive covariance trace, a singular
+null covariance, and non-finite finite-sample estimates are rejected.
+
+Both tests evaluate $T_2$ through an $N$-by-$N$ observation Gram matrix, with
+$O(N^2p)$ time and $O(Np+N^2)$ storage. Identity-null whitening adds
+$O(p^3+Np^2)$ time and $O(p^2)$ storage only when an explicit `popcov` is
+supplied; the default identity null does not allocate or factor a $p$-by-$p$
+matrix. Sphericity needs no feature-space matrix. The identity implementation
+also carries a common data scale analytically through the second- and fourth-
+order terms. Thus every finite scalar alternative remains evaluable even when
+its covariance underflows or its fourth-order trace overflows in raw float64
+arithmetic; a fixed fixture covers scales $10^{-300}$ and $10^{100}$.
+
+Each null audit reset one PCG64 generator with the named integer seed and, in
+each replication, drew one `standard_normal((100, 100))` array in C row-major
+order before calling the public function once. No samples or fitted quantities
+were reused across replications. The opt-in
+`tools/native_null_audits.py` runner preserves this exact public-call and
+random-stream contract.
+
+| public function | seed | rejection counts at 0.01, 0.05, 0.10 | rates | gate |
+|---|---:|---:|---:|---|
+| `czz_identity_1samp` | 20260835 | 260, 1090, 2119 | 0.01300, 0.05450, 0.10595 | Pass |
+| `czz_sphericity_1samp` | 20260836 | 231, 1068, 2025 | 0.01155, 0.05340, 0.10125 | Pass |
+
+The targeted audits used 2,000 independent arrays from a freshly reset PCG64
+stream. In each alternative the first coordinate had standard deviation 1.35
+and the other 99 coordinates had standard deviation one.
+
+| public function | seed | rejection counts at 0.01, 0.05, 0.10 | rates |
+|---|---:|---:|---:|---|
+| `czz_identity_1samp` | 20260945 | 72, 209, 356 | 0.0360, 0.1045, 0.1780 |
+| `czz_sphericity_1samp` | 20260946 | 65, 218, 372 | 0.0325, 0.1090, 0.1860 |
+
+These alternatives are intentionally modest checks of direction, not minimum-
+power promises. Primary source: [Chen, Zhang, and Zhong
+(2010)](https://doi.org/10.1198/jasa.2010.tm09560), Equations (2.1)--(2.3).
 
 ## Wu--Li random-projection tests
 
@@ -204,7 +273,11 @@ $$
 with the published type-I extreme-value survival probability. The tail is
 evaluated with `expm1` and a log rate, avoiding cancellation near zero. A
 literal double-loop fixture and all group, location, scale, and feature-order
-invariances pass. Fresh 20,000-run public-call normal-null streams at
+invariances pass. The implementation evaluates the literal centered-product
+squares in bounded feature blocks. This avoids both cancellation in the
+algebraic fourth-moment subtraction and an unbounded
+$O((n_1+n_2)p^2)$ product tensor; working storage is
+$O(n_1p+n_2p+p^2)$ plus a fixed-size block. Fresh 20,000-run public-call normal-null streams at
 $(n_1,n_2,p)=(100,100,30)$ produced counts `(163, 994, 2037)` and rates
 `(0.00815, 0.04970, 0.10185)` for seed 20260831, and counts
 `(176, 958, 2044)` and rates `(0.00880, 0.04790, 0.10220)` for seed 20260901.
@@ -244,6 +317,10 @@ weakened the OLS projection by `(1+gamma)`. The primary equations put `gamma`
 only in the prior penalty. pySHT uses ordinary OLS residuals and float64
 log-domain arithmetic.
 
+The ordered conditional regressions take
+$O((n_1+n_2)p^2)$ time. The input arrays and complete component matrix require
+$O((n_1+n_2)p+p^2)$ storage; no three-dimensional product tensor is formed.
+
 Primary source: {cite:t}`lee-you-lin-2024`.
 
 ## Schott multi-sample tests
@@ -262,12 +339,26 @@ $$
 It is algebraically identical to the paper's double-trace expression and is
 checked against that literal form. A singular pooled covariance is outside
 the Wald statistic's domain. SHT silently fell back to a pseudoinverse;
-pySHT rejects it.
+pySHT rejects it. Rank is evaluated by SVD on the stacked, separately centered
+observations after equilibration of each feature, and whitening is performed
+directly through the left singular vectors. This preserves independent
+changes of feature units without squaring the condition number in a pooled
+scatter matrix. The threshold is relative to the largest singular value and
+the dimensions of the equilibrated observation matrix. Exact linear
+dependencies are rejected; individual groups may be singular if their pooled
+within-group scatter is full rank.
 
 The 2007 test uses the paper's pairwise bias-corrected Frobenius statistic,
 pooled trace estimator, and normalizing $\theta$. A separate transcription of
 every pairwise term agrees with the optimized implementation. Group order,
 separate locations, and common scale do not affect either Schott result.
+The 2001 statistic additionally has full nonsingular affine invariance;
+regressions cover feature units from $10^{-200}$ to $10^{200}$ and a
+resolvable nearly dependent transformation. The 2007 Frobenius statistic does
+not claim invariance to arbitrary separate feature rescaling. Both current
+implementations require feature-space $p\times p$ work: the 2001 SVD costs
+$O(Np^2)$ when $N>p$, and the 2007 scatters cost $O(Np^2)$ time and
+$O(gp^2+Np)$ storage. They are not bounded-memory streaming methods in $p$.
 
 The fresh 20,000-replication public-call Gaussian-null audit was:
 
@@ -307,22 +398,63 @@ reports rejection counts and rates at level 0.05.
 | `schott_2001_ksamp` | Gaussian, $g=3,N_i=100,p=3$; third-group SD $(1.6,1,1)$ | 1947 | 0.9735 |
 | `schott_2007_ksamp` | Gaussian, $g=3,N_i=100,p=50$; third-group covariance $1.5I$ | 1968 | 0.9840 |
 
-For `lyl_2samp`, the same seed and 2,000 paired draws used
+For `maximum_pairwise_bayes_factor_2samp`, the same seed and 2,000 paired draws used
 $n_1=n_2=50,p=10$ and correlation 0.7 between the first two coordinates only
 in the alternative second group. The median maximum log Bayes factor moved
 from -5.38217 under the null comparator to 1.66247 under the alternative; the
 alternative exceeded its paired null value in 1919/2000 draws (0.9595). This
 is evidence direction, not a fabricated frequentist rejection rule.
 
+## Validation-blocked advanced combinations
+
+### Yu--Li--Xue covariance combination
+
+The private `_ylx_2samp` implementation computes the Li--Chen log upper tail
+$\ell_{LC}$ and the CLX extreme-value log upper tail $\ell_{CLX}$ before
+forming the paper's Fisher statistic
+
+$$
+-2(\ell_{LC}+\ell_{CLX})
+$$
+
+and its $\chi^2_4$ reference probability. A fixed fixture independently
+reconstructs both log tails and the combination, including cases where
+exponentiating a component first would underflow. It is not in `__all__` and
+there is no public `ylx_2samp` attribute. The paper's calibration depends on
+the asymptotic independence of the dense and maximum components; a named-seed
+20,000-null joint component-independence and size audit has not yet been
+completed in an advertised regime. The method therefore fails the release
+evidence gate even though the algebraic composition is implemented. Primary
+source: [Yu, Li, and Xue
+(2024)](https://doi.org/10.1080/01621459.2022.2126781).
+
+The private composition inherits the two component costs: its time is
+$O(\{n_1^2+n_2^2+n_1n_2\}p+(n_1+n_2)p^2)$ and its peak storage is
+$O(n_1^2+n_2^2+n_1n_2+(n_1+n_2)p+p^2)$. Those bounds are recorded for audit
+purposes only and do not relax the statistical release gate.
+
+### Jiang--Wang--Jiang--Wang--Zhang random integration
+
+`jwjwz_2samp` has no public or private callable. The primary paper was
+obtained, but the random-integration target, finite-sample estimator, and
+calibration have not yet been reconciled with a literal independent oracle.
+Consequently there are no fixed fixtures, 20,000-null gate, or targeted-power
+audit. Its implementable time and storage complexity therefore also remain
+uncertified; publishing either a callable or a performance claim at this stage
+would create the prohibited placeholder API. Primary source: [Jiang et al.
+(2023)](https://doi.org/10.5705/ss.202020.0486).
+
 ## Legacy mapping
 
 | pySHT | SHT 0.1.9 | Deliberate change |
 |---|---|---|
 | `_fisher_1samp` (withheld) | `cov1.2012Fisher` | Corrected implementation retained privately; reproducible release gates incomplete |
+| `czz_identity_1samp` | -- | pySHT-native high-dimensional identity test; known SPD null allowed by whitening |
+| `czz_sphericity_1samp` | -- | pySHT-native scale-free high-dimensional sphericity test |
 | `wl_1samp` | `cov1.2015WL` | Genuine two-sided maximum and local RNG |
 | `lc_2samp` | `cov2.2012LC` | Literal U-statistics; divide by estimated SD, not its square root |
 | `clx_2samp` | `cov2.2013CLX` | Stable extreme-value tail and strict domains |
 | `wl_2samp` | `cov2.2015WL` | Genuine two-sided, group-symmetric maximum |
-| `lyl_2samp` | `cov2.mxPBF` | Published OLS residuals, log output, no fabricated p-value |
+| `maximum_pairwise_bayes_factor_2samp` | `cov2.mxPBF` | Published OLS residuals, log output, no fabricated p-value |
 | `schott_2001_ksamp` | `covk.2001Schott` | Reject singular pooled covariance; no pseudoinverse fallback |
 | `schott_2007_ksamp` | `covk.2007Schott` | Stable common scaling and literal correction factors |

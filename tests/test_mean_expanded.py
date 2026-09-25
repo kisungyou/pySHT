@@ -130,6 +130,22 @@ class TestTraceBasedMeanTests:
         rng = np.random.default_rng(1002)
         return rng.normal(size=(13, 8)), rng.normal(size=(17, 8))
 
+    @pytest.mark.parametrize("rows,features", [(8, 20), (30, 3)])
+    def test_adaptive_trace_moments_match_dense_literal(
+        self, rows: int, features: int
+    ) -> None:
+        rng = np.random.default_rng(1049 + rows + features)
+        first = rng.normal(size=(rows, features))
+        second = rng.normal(size=(rows + 3, features))
+        covariance = _covariance(first)
+        trace, trace_squared = mean._covariance_trace_moments(first)
+        assert trace == pytest.approx(float(np.trace(covariance)), rel=3e-14)
+        assert trace_squared == pytest.approx(_trace_square(covariance), rel=3e-14)
+
+        expected_cross = float(np.trace(covariance @ _covariance(second)))
+        actual_cross = mean._trace_sample_covariance_product(first, second)
+        assert actual_cross == pytest.approx(expected_cross, rel=5e-14)
+
     def test_dempster_one_sample_matches_trace_f_formula(
         self, one_sample: NDArray[np.float64]
     ) -> None:
@@ -268,6 +284,29 @@ class TestTraceBasedMeanTests:
         assert scaled.statistic == pytest.approx(two_result.statistic, rel=2e-13)
         assert scaled.pvalue == pytest.approx(two_result.pvalue, rel=2e-13)
 
+    def test_srivastava_du_preserves_features_across_float64_exponents(
+        self,
+        one_sample: NDArray[np.float64],
+        two_samples: tuple[NDArray[np.float64], NDArray[np.float64]],
+    ) -> None:
+        """Coordinate-scale invariance must also hold computationally."""
+        scales = np.geomspace(1.0e-300, 1.0e300, one_sample.shape[1])
+        null = np.linspace(-0.2, 0.2, one_sample.shape[1])
+        one_baseline = mean.sd_1samp(one_sample, popmean=null)
+        one_scaled = mean.sd_1samp(
+            one_sample * scales,
+            popmean=null * scales,
+        )
+        assert one_scaled.statistic == pytest.approx(one_baseline.statistic, rel=3e-13)
+        assert one_scaled.pvalue == pytest.approx(one_baseline.pvalue, rel=3e-13)
+
+        x, y = two_samples
+        two_scales = np.geomspace(1.0e-300, 1.0e300, x.shape[1])
+        two_baseline = mean.sd_2samp(x, y)
+        two_scaled = mean.sd_2samp(x * two_scales, y * two_scales)
+        assert two_scaled.statistic == pytest.approx(two_baseline.statistic, rel=3e-13)
+        assert two_scaled.pvalue == pytest.approx(two_baseline.pvalue, rel=3e-13)
+
     @pytest.mark.parametrize(
         "function",
         [
@@ -286,6 +325,35 @@ class TestTraceBasedMeanTests:
         swapped = function(y, x)  # type: ignore[operator]
         assert swapped.statistic == pytest.approx(direct.statistic, rel=2e-13)
         assert swapped.pvalue == pytest.approx(direct.pvalue, rel=2e-13)
+
+    def test_trace_tests_do_not_materialize_feature_covariance(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        rng = np.random.default_rng(1050)
+        x = rng.normal(size=(12, 5_000))
+        y = rng.normal(size=(14, 5_000))
+
+        def forbidden_covariance(_values: NDArray[np.float64]) -> NDArray[np.float64]:
+            raise AssertionError("dense feature covariance allocation")
+
+        monkeypatch.setattr(mean, "_sample_covariance", forbidden_covariance)
+        for function in (
+            mean.dempster_1samp,
+            mean.bs_1samp,
+            mean.sd_1samp,
+        ):
+            result = function(x)
+            assert math.isfinite(result.statistic)
+            assert math.isfinite(result.pvalue)
+        for function in (
+            mean.dempster_2samp,
+            mean.bs_2samp,
+            mean.sd_2samp,
+        ):
+            result = function(x, y)
+            assert math.isfinite(result.statistic)
+            assert math.isfinite(result.pvalue)
 
     @pytest.mark.parametrize("shift", [1.0e8, 1.0e14])
     @pytest.mark.parametrize(
@@ -379,7 +447,7 @@ class TestMultivariateBehrensFisher:
             + (_trace_square(second_a) + float(np.trace(second_a)) ** 2) / (ny - 1)
         )
         johansen_v = p * (p + 2) / (3 * johansen_d)
-        johansen_q = p + 2 * johansen_d - 6 * johansen_d / (p * (p - 1) + 2)
+        johansen_q = p + 2 * johansen_d - 6 * johansen_d / (p + 2)
 
         yao = mean.yao_2samp(x, y)
         nvm = mean.nvm_2samp(x, y)
@@ -419,6 +487,37 @@ class TestMultivariateBehrensFisher:
         assert swapped.pvalue == pytest.approx(direct.pvalue, rel=5e-13)
         assert scaled.statistic == pytest.approx(direct.statistic, rel=5e-13)
         assert scaled.pvalue == pytest.approx(direct.pvalue, rel=5e-13)
+
+    @pytest.mark.parametrize(
+        "function",
+        [mean.yao_2samp, mean.ky_2samp, mean.johansen_2samp],
+    )
+    def test_affine_invariant_methods_preserve_extreme_column_units(
+        self,
+        function: object,
+        samples: tuple[NDArray[np.float64], NDArray[np.float64]],
+    ) -> None:
+        x, y = samples
+        scales = np.geomspace(1.0e-150, 1.0e150, x.shape[1])
+        baseline = function(x, y)  # type: ignore[operator]
+        rescaled = function(x * scales, y * scales)  # type: ignore[operator]
+        assert rescaled.statistic == pytest.approx(baseline.statistic, rel=8e-13)
+        assert rescaled.pvalue == pytest.approx(baseline.pvalue, rel=8e-13)
+
+    def test_nvm_keeps_affine_invariant_t2_at_extreme_column_units(
+        self,
+        samples: tuple[NDArray[np.float64], NDArray[np.float64]],
+    ) -> None:
+        x, y = samples
+        scales = np.geomspace(1.0e-150, 1.0e150, x.shape[1])
+        baseline = mean.nvm_2samp(x, y)
+        rescaled = mean.nvm_2samp(x * scales, y * scales)
+        assert rescaled.statistic == pytest.approx(baseline.statistic, rel=8e-13)
+        assert math.isfinite(rescaled.pvalue)
+        assert rescaled.df is not None
+        # The NVM trace-based degrees-of-freedom approximation itself is not
+        # affine-invariant, so equality of p-values is deliberately not
+        # asserted here.
 
     @pytest.mark.parametrize(
         "function",
@@ -526,7 +625,7 @@ class TestLargeLocationAnchoring:
                 {"n_subspaces": 5, "n_resamples": 19, "rng": 2505},
             ),
             (mean._clx_2samp, {"precision": np.eye(8)}),
-            (mean.lyl_2samp, {}),
+            (mean.maximum_pairwise_bayes_factor_2samp, {}),
         ],
     )
     def test_sparse_randomized_and_bayesian_tests_share_anchor(
@@ -789,6 +888,31 @@ class TestKSampleMeanTests:
         )
         assert translated.pvalue == pytest.approx(direct.pvalue, rel=2e-6)
 
+    def test_k_sample_trace_tests_avoid_feature_covariance(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        rng = np.random.default_rng(3050)
+        groups = (
+            rng.normal(size=(7, 5_000)),
+            rng.normal(size=(8, 5_000)),
+            rng.normal(size=(9, 5_000)),
+        )
+
+        def forbidden_covariance(_values: NDArray[np.float64]) -> NDArray[np.float64]:
+            raise AssertionError("dense feature covariance allocation")
+
+        monkeypatch.setattr(mean, "_sample_covariance", forbidden_covariance)
+        results = (
+            mean.schott_ksamp(*groups),
+            mean.cph_ksamp(*groups, variance_estimator="original"),
+            mean.cph_ksamp(*groups, variance_estimator="hu"),
+            mean.zx_ksamp(*groups),
+        )
+        for result in results:
+            assert math.isfinite(result.statistic)
+            assert math.isfinite(result.pvalue)
+
     def test_zx_is_literal_scheffe_transformation_with_explicit_base_test(
         self,
     ) -> None:
@@ -952,7 +1076,9 @@ class TestRandomizedMeanTests:
                 combined[order[first.shape[0] :]],
                 projection,
             )
-            exceedances += int(permuted >= observed)
+            exceedances += int(
+                permuted >= observed - 100 * np.finfo(float).eps * abs(observed)
+            )
 
         assert actual.statistic == pytest.approx(observed, rel=5e-13)
         assert actual.exceedances == exceedances
@@ -970,6 +1096,32 @@ class TestRandomizedMeanTests:
             )
             == actual
         )
+
+    def test_ljw_projects_before_forming_covariances(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        rng = np.random.default_rng(7103)
+        first = rng.normal(size=(5, 5_000))
+        second = rng.normal(size=(6, 5_000))
+        original_covariance = mean._sample_covariance
+
+        def guarded_covariance(values: NDArray[np.float64]) -> NDArray[np.float64]:
+            if values.shape[1] > 10:
+                raise AssertionError("ambient feature covariance allocation")
+            return original_covariance(values)
+
+        monkeypatch.setattr(mean, "_sample_covariance", guarded_covariance)
+        for calibration in ("asymptotic", "monte-carlo"):
+            result = mean.ljw_2samp(
+                first,
+                second,
+                calibration=calibration,
+                n_resamples=3,
+                rng=7103,
+            )
+            assert math.isfinite(result.statistic)
+            assert math.isfinite(result.pvalue)
 
     def test_thulin_fixes_subspace_plan_across_permutations(
         self, samples: tuple[NDArray[np.float64], NDArray[np.float64]]
@@ -1024,7 +1176,9 @@ class TestRandomizedMeanTests:
                 combined[order[: first.shape[0]]],
                 combined[order[first.shape[0] :]],
             )
-            exceedances += int(permuted >= observed)
+            exceedances += int(
+                permuted >= observed - 100 * np.finfo(float).eps * abs(observed)
+            )
 
         assert actual.statistic == pytest.approx(observed, rel=5e-13)
         assert actual.exceedances == exceedances
@@ -1047,6 +1201,30 @@ class TestRandomizedMeanTests:
 
         signature = inspect.signature(mean.thulin_2samp)
         assert "subspace_dimension" not in signature.parameters
+
+    def test_thulin_subspace_kernel_never_allocates_a_full_feature_identity(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        rng = np.random.default_rng(7202)
+        first = rng.normal(size=(5, 5_000))
+        second = rng.normal(size=(6, 5_000))
+        subspaces = (
+            np.array([3, 117, 4_999], dtype=np.intp),
+            np.array([21, 900, 3_001], dtype=np.intp),
+        )
+        original_eye = np.eye
+
+        def guarded_eye(
+            size: int, *args: object, **kwargs: object
+        ) -> NDArray[np.float64]:
+            if size > 10:
+                raise AssertionError("full-dimensional identity allocation")
+            return np.asarray(original_eye(size, *args, **kwargs), dtype=np.float64)
+
+        monkeypatch.setattr(mean.np, "eye", guarded_eye)
+        statistic = mean._subspace_hotelling_statistic(first, second, subspaces)
+        assert math.isfinite(statistic)
 
     @pytest.mark.parametrize(
         "function,kwargs",
@@ -1300,7 +1478,7 @@ class TestSparseAndBayesianMeanTests:
         x, y = samples
         gamma = 0.07
         expected = self._lyl_components(x, y, a0=0.0, b0=0.0, gamma=gamma)
-        actual = mean.lyl_2samp(x, y, gamma=gamma)
+        actual = mean.maximum_pairwise_bayes_factor_2samp(x, y, gamma=gamma)
         assert isinstance(actual, BayesFactorTestResult)
         np.testing.assert_allclose(
             actual.component_log_bayes_factors,
@@ -1318,7 +1496,9 @@ class TestSparseAndBayesianMeanTests:
         # would underflow/overflow if residual sums of squares were formed on
         # the unnormalized observations.
         for scale in (1.0e-200, 1.0e200):
-            scaled = mean.lyl_2samp(scale * x, scale * y, gamma=gamma)
+            scaled = mean.maximum_pairwise_bayes_factor_2samp(
+                scale * x, scale * y, gamma=gamma
+            )
             np.testing.assert_allclose(
                 scaled.component_log_bayes_factors,
                 actual.component_log_bayes_factors,
@@ -1333,7 +1513,7 @@ class TestSparseAndBayesianMeanTests:
         alpha = 2.01
         gamma = max(x.shape[0] + y.shape[0], x.shape[1]) ** (-alpha)
         expected = self._lyl_components(x, y, a0=0.0, b0=0.0, gamma=gamma)
-        actual = mean.lyl_2samp(x, y)
+        actual = mean.maximum_pairwise_bayes_factor_2samp(x, y)
         np.testing.assert_allclose(
             actual.component_log_bayes_factors,
             expected,
@@ -1346,7 +1526,7 @@ class TestSparseAndBayesianMeanTests:
         assert diagnostics["gamma source"] == "paper rate"
         assert diagnostics["prior specification"] == "paper Equation (4)"
 
-        explicit = mean.lyl_2samp(x, y, alpha=7.0, gamma=0.04)
+        explicit = mean.maximum_pairwise_bayes_factor_2samp(x, y, alpha=7.0, gamma=0.04)
         assert _diagnostics(explicit)["gamma"] == 0.04
         assert _diagnostics(explicit)["gamma source"] == "explicit"
         assert "alpha" not in _diagnostics(explicit)
@@ -1357,7 +1537,7 @@ class TestSparseAndBayesianMeanTests:
         x, y = samples
         controls = {"a0": 0.4, "b0": 0.25, "gamma": 0.03}
         expected = self._lyl_components(x, y, **controls)
-        actual = mean.lyl_2samp(x, y, **controls)
+        actual = mean.maximum_pairwise_bayes_factor_2samp(x, y, **controls)
         np.testing.assert_allclose(
             actual.component_log_bayes_factors,
             expected,
@@ -1365,10 +1545,12 @@ class TestSparseAndBayesianMeanTests:
             atol=5e-13,
         )
 
-        translated = mean.lyl_2samp(x + 1e8, y + 1e8, **controls)
-        swapped = mean.lyl_2samp(y, x, **controls)
+        translated = mean.maximum_pairwise_bayes_factor_2samp(
+            x + 1e8, y + 1e8, **controls
+        )
+        swapped = mean.maximum_pairwise_bayes_factor_2samp(y, x, **controls)
         scale = 1e100
-        scaled = mean.lyl_2samp(
+        scaled = mean.maximum_pairwise_bayes_factor_2samp(
             scale * x,
             scale * y,
             a0=controls["a0"],
@@ -1397,17 +1579,17 @@ class TestSparseAndBayesianMeanTests:
     def test_lyl_constant_feature_boundaries(self) -> None:
         x = np.zeros((6, 2))
         y = np.ones((7, 2))
-        assert mean.lyl_2samp(x, y).statistic == math.inf
+        assert mean.maximum_pairwise_bayes_factor_2samp(x, y).statistic == math.inf
         with pytest.raises(ValueError, match="constant feature"):
-            mean.lyl_2samp(x, np.zeros((7, 2)))
+            mean.maximum_pairwise_bayes_factor_2samp(x, np.zeros((7, 2)))
 
     def test_lyl_prior_controls_are_strict(self) -> None:
         rng = np.random.default_rng(5099)
         x, y = rng.normal(size=(8, 3)), rng.normal(size=(9, 3))
         with pytest.raises(ValueError, match="alpha"):
-            mean.lyl_2samp(x, y, alpha=0.0)
+            mean.maximum_pairwise_bayes_factor_2samp(x, y, alpha=0.0)
         with pytest.raises(ValueError, match="gamma"):
-            mean.lyl_2samp(x, y, gamma=0.0)
+            mean.maximum_pairwise_bayes_factor_2samp(x, y, gamma=0.0)
 
 
 def test_public_catalog_and_control_surface_are_exact() -> None:
@@ -1415,6 +1597,7 @@ def test_public_catalog_and_control_surface_are_exact() -> None:
         "anova_oneway",
         "bs_1samp",
         "bs_2samp",
+        "cq_2samp",
         "cph_ksamp",
         "dempster_1samp",
         "dempster_2samp",
@@ -1422,8 +1605,11 @@ def test_public_catalog_and_control_surface_are_exact() -> None:
         "hotelling_2samp",
         "johansen_2samp",
         "ky_2samp",
+        "li_1samp",
+        "li_2samp",
+        "li_ksamp",
         "ljw_2samp",
-        "lyl_2samp",
+        "maximum_pairwise_bayes_factor_2samp",
         "nvm_2samp",
         "schott_ksamp",
         "sd_1samp",
@@ -1444,7 +1630,7 @@ def test_public_catalog_and_control_surface_are_exact() -> None:
     assert ljw.parameters["n_resamples"].kind is inspect.Parameter.KEYWORD_ONLY
     thulin = inspect.signature(mean.thulin_2samp)
     assert list(thulin.parameters) == ["x", "y", "n_subspaces", "n_resamples", "rng"]
-    lyl = inspect.signature(mean.lyl_2samp)
+    lyl = inspect.signature(mean.maximum_pairwise_bayes_factor_2samp)
     assert lyl.parameters["alpha"].default == 2.01
     assert lyl.parameters["gamma"].default is None
 

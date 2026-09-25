@@ -41,6 +41,12 @@ This is a property of the displayed split-sample estimator, not a reason to
 sort the observations: a data-dependent sort would invalidate independence of
 the two covariance estimates. The Hu branch has no such row-split dependence.
 
+Every covariance-trace product uses whichever exact row- or feature-space
+product has lower cost, and the Hu squared trace uses the smaller Gram. Thus
+neither variance estimator allocates a dense $p\times p$ covariance matrix in
+the high-dimensional regime or a dense row Gram for tall low-dimensional
+inputs. A 5,000-feature regression guards both branches.
+
 ## Null calibration gate
 
 The advertised factor-model special case uses three independent groups of 20

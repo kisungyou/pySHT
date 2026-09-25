@@ -6,6 +6,9 @@ uniformity](https://doi.org/10.1007/s00362-015-0715-x), while correcting the
 calibration policy where the paper's approximation fails the pySHT release
 gate.
 
+The pySHT-native nearest-neighbor addition has a separate
+[EHY rectangular-uniformity ledger](ehy-rectangular.md).
+
 ## Domain transformation
 
 For declared bounds $a_j<b_j$, both tests map

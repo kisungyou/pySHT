@@ -26,6 +26,21 @@ the seeded projection and every permutation independently, verifies the
 exceedance count, and checks the corrected `(b + 1) / (B + 1)` p-value,
 Monte Carlo standard error, and binomial interval.
 
+Each allocation is also put in a deterministic row/group order before
+evaluating its statistic. The upper-tail comparison includes relative
+roundoff ties within $100\epsilon|T_{\mathrm{obs}}|$, conservatively retaining
+mathematically equal allocations instead of ranking matrix-solve noise.
+A full-dimensional six-row fixture independently enumerates all 20 labels:
+its two upper-tail allocations give exact probability 0.1, and the prescribed
+9,999-draw stream now counts 1,018 exceedances, giving 0.1019. Row and group
+permutations reproduce that count. The quadratic is evaluated directly from
+an SVD of equilibrated centered projected observations, which also checks
+rank and avoids squaring the residual matrix's condition number. If $k=p$,
+an invertible projection spans the entire feature space; the implementation
+draws and validates it but evaluates the equivalent original-coordinate
+Hotelling statistic directly. This prevents avoidable loss from mixing
+features whose units differ by many orders of magnitude.
+
 Unrestricted label permutation is exact under exchangeability of the pooled
 observations. Equality of means by itself is insufficient if the two null
 distributions differ. Before applying an integer-seeded random plan, pySHT
@@ -34,6 +49,12 @@ reindexes a uniform random labeling distribution; it does not change the
 observed statistic or its conditional null law. Regression tests cover both
 equal and unequal sample sizes and establish identical full results after row
 reordering or group exchange.
+
+Observations are projected to $k$ dimensions before their sample covariances
+are formed. This is algebraically identical to multiplying a full covariance
+on both sides by the projection, but avoids ambient $p\times p$ storage for
+the observed statistic and every permutation. A 5,000-feature allocation
+guard covers both calibration paths.
 
 ## Targeted alternative-power gate
 

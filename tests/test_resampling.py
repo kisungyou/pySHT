@@ -63,6 +63,20 @@ def test_monte_carlo_interval_handles_boundary_counts(
     assert interval == pytest.approx(expected_interval)
 
 
+def test_monte_carlo_interval_keeps_extreme_confidence_upper_tail() -> None:
+    confidence_level = np.nextafter(1.0, 0.0)
+    _, _, interval = monte_carlo_calibration(
+        8,
+        100,
+        confidence_level=confidence_level,
+    )
+
+    alpha = 1.0 - confidence_level
+    expected_upper = stats.beta.isf(alpha / 2.0, 9, 92)
+    assert interval[1] == expected_upper
+    assert interval[1] < 1.0
+
+
 @pytest.mark.parametrize(
     ("exceedances", "n_resamples", "error"),
     [

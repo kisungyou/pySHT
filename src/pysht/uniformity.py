@@ -7,7 +7,7 @@ from typing import Final, Literal
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
-from scipy import integrate, stats
+from scipy import integrate, special, stats
 from scipy.spatial import distance
 
 from ._resampling import monte_carlo_calibration
@@ -17,9 +17,10 @@ from ._validation import (
     validate_2d_sample,
     validate_choice,
     validate_positive_integer,
+    validate_real_scalar,
 )
 
-__all__ = ["ym_interpoint", "ym_quantile"]
+__all__ = ["ehy", "ym_interpoint", "ym_quantile"]
 
 
 type _InterpointStatistic = Literal["q1", "q2", "q3"]
@@ -27,6 +28,7 @@ type _Calibration = Literal["asymptotic", "monte-carlo"]
 
 _ALTERNATIVE: Final = "the distribution is not uniform on the specified hyperrectangle"
 _MONTE_CARLO_BATCH_VALUES: Final = 1_000_000
+_EHY_LOG_TIE_RTOL: Final = 100.0 * np.finfo(np.float64).eps
 
 
 def _validate_statistic(value: str) -> _InterpointStatistic:
@@ -79,12 +81,14 @@ def _unit_hyperrectangle(
     lower: ArrayLike | None,
     upper: ArrayLike | None,
     strict_interior: bool,
+    minimum_dimension: int = 2,
 ) -> NDArray[np.float64]:
     """Validate observations and map their declared support to the unit cube."""
     values = validate_2d_sample(x, name="x", minimum_rows=2)
     dimension = values.shape[1]
-    if dimension < 2:
-        raise ValueError("x must contain at least two features")
+    if dimension < minimum_dimension:
+        feature_word = "feature" if minimum_dimension == 1 else "features"
+        raise ValueError(f"x must contain at least {minimum_dimension} {feature_word}")
     lower_bound = _validate_bound(lower, name="lower", dimension=dimension, default=0.0)
     upper_bound = _validate_bound(upper, name="upper", dimension=dimension, default=1.0)
     if np.any(lower_bound >= upper_bound):
@@ -257,6 +261,140 @@ def _interpoint_monte_carlo_exceedances(
         exceedances += int(np.count_nonzero(simulated >= observed))
         remaining -= current
     return exceedances
+
+
+def _ehy_log_statistic(
+    values: NDArray[np.float64], *, alpha: float, n_neighbors: int
+) -> float:
+    """Return log of the Ebner--Henze--Yukich volume-score statistic."""
+    sample_size, dimension = values.shape
+    differences = values[:, None, :] - values[None, :, :]
+    # Sort the nonnegative coordinate contributions before reduction.  This
+    # makes a fixed Monte Carlo stream exactly reproducible after a common
+    # feature permutation, not merely equal up to a last-bit summation change.
+    np.square(differences, out=differences)
+    differences.sort(axis=2)
+    squared_distances = np.sum(
+        differences,
+        axis=2,
+        dtype=np.float64,
+    )
+    np.fill_diagonal(squared_distances, math.inf)
+    nearest_squared = np.partition(squared_distances, n_neighbors - 1, axis=1)[
+        :, :n_neighbors
+    ]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        log_radius = 0.5 * np.log(nearest_squared)
+    log_unit_ball_volume = 0.5 * dimension * math.log(math.pi) - float(
+        special.gammaln(0.5 * dimension + 1.0)
+    )
+    log_scores = alpha * (
+        log_unit_ball_volume + math.log(sample_size) + dimension * log_radius
+    )
+    return float(special.logsumexp(np.sort(log_scores, axis=None)))
+
+
+def _from_log_nonnegative(log_value: float) -> float:
+    if log_value == -math.inf:
+        return 0.0
+    if log_value > math.log(np.finfo(np.float64).max):
+        return math.inf
+    return math.exp(log_value)
+
+
+def _ehy_log_tail_contains(
+    candidate: float,
+    observed: float,
+    *,
+    lower_tail: bool,
+) -> bool:
+    """Include last-bit numerical ties in the selected EHY log tail."""
+    direct = candidate <= observed if lower_tail else candidate >= observed
+    if direct or not (math.isfinite(candidate) and math.isfinite(observed)):
+        return direct
+    tolerance = _EHY_LOG_TIE_RTOL * max(1.0, abs(candidate), abs(observed))
+    return bool(
+        candidate <= observed + tolerance
+        if lower_tail
+        else candidate >= observed - tolerance
+    )
+
+
+def ehy(
+    x: ArrayLike,
+    *,
+    alpha: float,
+    n_neighbors: int,
+    lower: ArrayLike | None = None,
+    upper: ArrayLike | None = None,
+    calibration: str = "monte-carlo",
+    n_resamples: int = 9_999,
+    rng: int | np.integer | np.random.Generator | None = None,
+) -> ResamplingTestResult:
+    """Perform the EHY nearest-neighbor test of rectangular uniformity.
+
+    ``alpha`` and ``n_neighbors`` are scientifically consequential tuning
+    parameters and therefore have no data-selected defaults.  The paper's
+    statistic rejects in the lower tail for ``0 < alpha < 1`` and in the upper
+    tail for ``alpha > 1``.  ``alpha=1`` is rejected because its probability
+    limit is distribution-free and cannot identify non-uniform alternatives.
+    """
+    validate_choice(calibration, name="calibration", choices=("monte-carlo",))
+    power = validate_real_scalar(alpha, name="alpha")
+    if power <= 0.0:
+        raise ValueError("alpha must be greater than 0")
+    if power == 1.0:
+        raise ValueError("alpha must not equal 1")
+    neighbors = validate_positive_integer(n_neighbors, name="n_neighbors")
+    values = _unit_hyperrectangle(
+        x,
+        lower=lower,
+        upper=upper,
+        strict_interior=False,
+        minimum_dimension=1,
+    )
+    sample_size, dimension = values.shape
+    if neighbors >= sample_size:
+        raise ValueError("n_neighbors must be smaller than the sample size")
+    resamples = validate_positive_integer(n_resamples, name="n_resamples")
+    generator = make_generator(rng)
+
+    observed_log = _ehy_log_statistic(values, alpha=power, n_neighbors=neighbors)
+    lower_tail = power < 1.0
+    exceedances = 0
+    for _ in range(resamples):
+        simulated = generator.random((sample_size, dimension))
+        simulated_log = _ehy_log_statistic(
+            simulated, alpha=power, n_neighbors=neighbors
+        )
+        exceedances += int(
+            _ehy_log_tail_contains(
+                simulated_log,
+                observed_log,
+                lower_tail=lower_tail,
+            )
+        )
+    pvalue, standard_error, interval = monte_carlo_calibration(exceedances, resamples)
+    return ResamplingTestResult(
+        statistic=_from_log_nonnegative(observed_log),
+        pvalue=pvalue,
+        method=(
+            "Ebner-Henze-Yukich nearest-neighbor test for rectangular uniformity (2018)"
+        ),
+        alternative=_ALTERNATIVE,
+        data_name="x",
+        statistic_name="T_alpha,n,J",
+        calibration="Monte Carlo rectangular-uniform null calibration",
+        n_resamples=resamples,
+        exceedances=exceedances,
+        monte_carlo_standard_error=standard_error,
+        tail_probability_interval=interval,
+        diagnostics=(
+            ("alpha", power),
+            ("n_neighbors", neighbors),
+            ("rejection tail", "lower" if lower_tail else "upper"),
+        ),
+    )
 
 
 def ym_interpoint(

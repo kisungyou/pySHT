@@ -1,17 +1,20 @@
 # Methods and implementation status
 
-pySHT exposes 51 canonical functions covering 52 of the 54 public statistical
-routine identities in SHT 0.1.9. `mvar1.1998AS` and `mvar1.LRT` are
-algebraically the same test and share `pysht.mean_variance.as_1samp`.
+The development API has 72 canonical public functions. Its 51-function
+compatibility core covers 52 of the 54 public statistical routine identities
+in SHT 0.1.9; `mvar1.1998AS` and `mvar1.LRT` are algebraically the same test
+and share `pysht.mean_variance.lrt_1samp`. Another 21 validated research
+methods have no SHT counterpart.
 `mean2.2014CLX` and `cov1.2012Fisher` are validation-blocked and have no public
 callable. The two R callable adapters are unnecessary in Python, and no
 compatibility aliases are added.
 
 The [API reference](../api/index.md) is authoritative for callable names and
 signatures. The [R migration crosswalk](../migration/from-r.md) records every
-legacy entry point, while the searchable
-[method names and acronyms](names-and-acronyms.md) glossary expands author
-tokens, years, and spelling variants.
+legacy entry point; the [pySHT-native catalog](native-methods.md) records
+research additions beyond SHT; and the searchable [method names and
+acronyms](names-and-acronyms.md) glossary expands author tokens, years, and
+spelling variants.
 
 ## Scientific categories
 
@@ -24,10 +27,12 @@ tokens, years, and spelling variants.
 | [4] Covariance | `pysht.covariance` | validated one-, two-, and multi-sample covariance tests, including a Bayesian procedure; Fisher remains withheld |
 | [5] Mean and variance | `pysht.mean_variance` | one- and two-sample joint tests for univariate normal parameters |
 | [6] Mean and covariance | `pysht.mean_covariance` | one- and two-sample joint multivariate tests |
-| [7] Equality of distributions | `pysht.equaldist` | exact or Monte Carlo two-sample permutation testing |
-| [8] Normality | `pysht.normality` | Shapiro and moment-based univariate goodness-of-fit tests |
-| [9] Rectangular uniformity | `pysht.uniformity` | interpoint-distance and normal-quantile tests |
-| [10] Special domains | `pysht.simplex` | probability-simplex uniformity against Dirichlet alternatives |
+| [7] Equality of distributions | `pysht.equaldist` | exact or Monte Carlo interpoint, energy, and kernel permutation tests; Ball remains withheld |
+| [8] Normality | `pysht.normality` | univariate Shapiro/moment tests and omnibus multivariate tests |
+| [9] Rectangular uniformity | `pysht.uniformity` | interpoint, normal-quantile, and nearest-neighbor tests |
+| [10] Special domains | `pysht.simplex` | simplex uniformity and compositional distribution equality |
+| [11] Independence | `pysht.independence` | distance- and kernel-based pairwise or mutual independence tests |
+| [12] Circular data | `pysht.circular` | circular uniformity and multi-sample equality tests |
 
 Module qualification is part of a function's identity. For example, the
 public covariance CLX test belongs to `pysht.covariance`, while the distinct
@@ -57,4 +62,5 @@ evidence and advertised regimes behind each implementation.
 :maxdepth: 1
 
 names-and-acronyms
+native-methods
 ```

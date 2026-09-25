@@ -25,6 +25,24 @@ Validation includes a literal fixed-data formula, pivot-inversion checks for
 two- and one-sided intervals, joint data/null rescaling through approximately
 $10^{\pm100}$, strict control validation, and `htest`-style rendering.
 
+The p-value retains the log pivot independently of its displayed statistic.
+For $z=X^2/2$ below half of machine epsilon, the implementation evaluates
+$\log P(a,z)=a\log z-\log\Gamma(a+1)$, where $a=(n-1)/2$.
+The omitted factor is bounded between $e^{-z}$ and 1, so its relative
+effect is below machine epsilon. This follows directly from the
+[incomplete-gamma integral and series](https://dlmf.nist.gov/8.7).
+For ordinary pivots, SciPy supplies both log tails. Subnormal probabilities
+are reevaluated before SciPy's intermediate arithmetic can
+underflow: a positive lower-gamma series or the finite upper-gamma recurrence
+for integer and half-integer shapes retains the log prefactor. The upper
+recurrence uses the exact exponential or scaled complementary-error-function
+base case. Positive geometric bounds limit the omitted terms to machine
+epsilon relative to the sum; failure to converge within 100,000 terms raises
+an arithmetic error. The independent
+one-degree-of-freedom identity for a sample $(0,d)$ is
+$P(X^2\le d^2/2)=\operatorname{erf}(|d|/2)$; regression checks retain
+the positive p-value for $d=10^{-200}$ even though $X^2$ is displayed as zero.
+
 ## Two-sample F test
 
 For two independent normal samples,
@@ -46,10 +64,61 @@ p_{\text{less}}(y,x)=p_{\text{greater}}(x,y).
 $$
 
 When group scales span the float64 exponent range, each positive spread keeps
-an independently evaluated variance log if common normalization would
-underflow it. Tests cover a ratio below the smallest representable positive
+an independently evaluated variance log if common normalization would place
+any nonzero anchored entry in the subnormal range. This prevents partial
+precision loss before the variance is logged, including when one group's
+large common location far exceeds its spread. Tests compare a group near
+$10^{300}$, separated by one floating-point spacing, against its explicitly
+recentered version and a second group with spread $10^{-22}$. The F tail
+agrees with its exact squared-Cauchy identity and Bartlett's statistic is
+unchanged by the translation. Tests also cover a ratio below the smallest representable positive
 float and its reciprocal above the largest one; the reported boundary
 statistics remain zero and infinity with the correct tail probability.
+
+The lower and upper tails use the complementary beta arguments
+$x=\operatorname{logistic}(\log F+\log \nu_1-\log\nu_2)$ and $1-x$,
+retaining the smaller argument in log space and swapping the beta shapes when
+necessary. This avoids rounding an argument close to one before calculating
+its complementary tail. For an extremely small argument,
+$\log I_x(a,b)=a\log x-\log a-\log B(a,b)$ is used only when
+$x\max(1,b)<\epsilon/2$. The omitted factor is a weighted mean of
+$(1-t)^{b-1}$ over $0\le t\le x$, whose log magnitude is then below
+machine epsilon. Ordinary arguments use SciPy's regularized incomplete beta
+function and its directly evaluated complement, retaining the smaller tail
+and calculating its complement with `log1p`. Subnormal probabilities
+are reevaluated with the positive hypergeometric series in DLMF 8.17.8,
+retaining the log prefactor. A geometric bound on all remaining terms controls
+truncation; failure to converge within 100,000 terms raises an arithmetic
+error. For arguments above 0.9, where that series converges slowly, a
+modified-Lentz evaluation of the DLMF 8.17.22 continued fraction retains the
+log prefactor and the small complementary argument. Three successive full
+convergents must stabilize within four machine epsilons, with the same
+iteration cap and an explicit error on nonconvergence. These fallbacks cover
+subnormal tails even for arguments near $1/2$ or 1, where an endpoint
+approximation would be inappropriate. If one beta shape is an integer
+$m\le32$ and the other is at least 10,000, the normalizer uses the exact
+short recurrence $\log B(a,m)=\log\Gamma(m)-\sum_{j=0}^{m-1}\log(a+j)$.
+This avoids cancellation from subtracting large log-gamma values. A separate
+finite beta-sum identity checks shape pairs $(2{,}000{,}000,3)$ and
+$(10{,}000{,}000,25)$, including reciprocal F tails. Half-integer shapes up
+32 use the companion base
+$\log B(a,1/2)=\tfrac12(\log\pi-\log a)+1/(8a)-1/(192a^3)$
+and the exact short beta recurrence. The next term is below
+$1.6\times10^{-23}$ at the cutoff $a=10{,}000$; an exact central-binomial
+coefficient identity independently checks that boundary. See the
+[gamma-ratio expansion](https://dlmf.nist.gov/5.11) and
+[beta integral and identities](https://dlmf.nist.gov/8.17).
+
+Regression tests use the independent squared-Cauchy identity for $F_{1,1}$,
+covering ratios whose displayed statistic overflows and reciprocal ratios
+that underflow. They also check unequal degrees of freedom against SciPy,
+continuity across normal/subnormal pivot ranges, subnormal p-values, exact
+Poisson-sum identities for integer gamma shapes, and the $I_x(a,1)=x^a$
+identity with $a=1075$ and $x$ near $1/2$.
+Two-sided probabilities double the smaller tail in log space before rounding;
+this preserves a representable doubled tail even when the single tail rounds
+to zero. Tail probabilities below half the smallest positive float still
+necessarily round to zero.
 
 ## Bartlett test
 

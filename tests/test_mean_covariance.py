@@ -4,11 +4,18 @@ from __future__ import annotations
 
 import math
 import unittest
+from unittest import mock
 
 import numpy as np
 from scipy import stats
 
+from pysht import mean_covariance
 from pysht.mean_covariance import hn_2samp, llzs_1samp, lrt_1samp
+
+
+def test_ylxl_remains_absent_until_its_scientific_gate_passes() -> None:
+    assert "ylxl_2samp" not in mean_covariance.__all__
+    assert not hasattr(mean_covariance, "ylxl_2samp")
 
 
 class TestOneSampleMeanCovariance(unittest.TestCase):
@@ -106,6 +113,20 @@ class TestOneSampleMeanCovariance(unittest.TestCase):
         np.testing.assert_allclose(result.statistic, expected, rtol=3e-14)
         np.testing.assert_allclose(result.pvalue, stats.norm.sf(expected), rtol=3e-14)
 
+    def test_llzs_default_identity_does_not_allocate_a_feature_matrix(self) -> None:
+        values = np.random.default_rng(7002).normal(size=(6, 5_000))
+
+        with mock.patch.object(
+            np,
+            "eye",
+            side_effect=AssertionError(
+                "the default identity null must remain implicit"
+            ),
+        ):
+            result = llzs_1samp(values)
+
+        self.assertTrue(math.isfinite(result.statistic))
+
     def test_one_sample_tests_are_invariant_to_null_whitening(self) -> None:
         rng = np.random.default_rng(881)
         standardized = rng.normal(size=(40, 5))
@@ -196,6 +217,50 @@ class TestOneSampleMeanCovariance(unittest.TestCase):
         self.assertEqual(llzs.pvalue, 0.0)
         self.assertEqual(likelihood_ratio.statistic, math.inf)
         self.assertEqual(likelihood_ratio.pvalue, 0.0)
+
+    def test_lrt_preserves_full_rank_across_heterogeneous_column_units(self) -> None:
+        rng = np.random.default_rng(1803)
+        base = rng.normal(size=(30, 2))
+        scales = np.array([1.0e-200, 1.0])
+        values = base * scales
+        centered = base - np.mean(base, axis=0)
+        normalized_covariance = centered.T @ centered / len(base)
+        normalized_mean = np.mean(base, axis=0)
+        quadratic = float(
+            np.sum((np.diag(normalized_covariance) + normalized_mean**2) * scales**2)
+        )
+        _, normalized_log_determinant = np.linalg.slogdet(normalized_covariance)
+        log_determinant = normalized_log_determinant + 2.0 * float(
+            np.sum(np.log(scales))
+        )
+        expected = len(base) * (quadratic - log_determinant - base.shape[1])
+
+        actual = lrt_1samp(values)
+
+        self.assertTrue(math.isfinite(actual.statistic))
+        np.testing.assert_allclose(actual.statistic, expected, rtol=2e-15)
+        self.assertEqual(actual.pvalue, 0.0)
+
+        overwhelming = lrt_1samp(base * np.array([1.0e-200, 1.0e200]))
+        self.assertEqual(overwhelming.statistic, math.inf)
+        self.assertEqual(overwhelming.pvalue, 0.0)
+
+        small_but_representable = np.array([1.0e-100, 1.0])
+        small_result = lrt_1samp(base * small_but_representable)
+        small_quadratic = float(
+            np.sum(
+                (np.diag(normalized_covariance) + normalized_mean**2)
+                * small_but_representable**2
+            )
+        )
+        small_log_determinant = normalized_log_determinant + 2.0 * float(
+            np.sum(np.log(small_but_representable))
+        )
+        small_expected = len(base) * (
+            small_quadratic - small_log_determinant - base.shape[1]
+        )
+        self.assertTrue(math.isfinite(small_result.statistic))
+        np.testing.assert_allclose(small_result.statistic, small_expected, rtol=2e-15)
 
 
 class TestHyodoNishiyama(unittest.TestCase):

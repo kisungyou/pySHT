@@ -122,7 +122,7 @@ def _check_validation_sidebar(app: Sphinx, exception: BaseException | None) -> N
         return
 
     output_root = Path(app.outdir)
-    pages = [output_root / "user-guide" / "index.html"]
+    pages = sorted((output_root / "user-guide").rglob("*.html"))
     pages.extend(sorted((output_root / "validation").rglob("*.html")))
     anchor_pattern = re.compile(r"<a\b[^>]*>\s*Validation ledgers\s*</a>", re.DOTALL)
     failures: list[str] = []

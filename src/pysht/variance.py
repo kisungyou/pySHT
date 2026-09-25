@@ -36,6 +36,9 @@ __all__ = [
 
 _LOG_FLOAT_MAX = math.log(float(np.finfo(np.float64).max))
 _LOG_FLOAT_MIN = math.log(float(np.nextafter(0.0, 1.0)))
+_LOG_EPSILON = math.log(float(np.finfo(np.float64).eps))
+_TAIL_REEVALUATION_THRESHOLD = float(np.finfo(np.float64).tiny)
+_TAIL_SERIES_LIMIT = 100_000
 
 
 def _sample_variance_log(values: NDArray[np.float64]) -> float:
@@ -83,17 +86,15 @@ def _relative_variance_logs(
         anchor = float(np.min(group))
         with np.errstate(over="ignore", invalid="ignore"):
             shifted = group - anchor
-        normalized = (
-            shifted / common_scale
-            if np.all(np.isfinite(shifted))
-            else group / common_scale
-        )
-        relative_log = _sample_variance_log(normalized)
-        if relative_log == -math.inf and not np.all(group == group[0]):
-            # A genuinely positive but vastly smaller spread may underflow on
-            # the common scale.  Retain it through its independently scaled
-            # logarithm instead.
+        anchored = shifted if np.all(np.isfinite(shifted)) else group
+        normalized = anchored / common_scale
+        if np.any((anchored != 0.0) & (np.abs(normalized) < np.finfo(np.float64).tiny)):
+            # Even partial subnormal rounding can alter the variance before
+            # its logarithm is taken.  Preserve an independently scaled log
+            # as soon as any nonzero anchored entry loses normal precision.
             relative_log = _sample_variance_log(group) - log_common_square
+        else:
+            relative_log = _sample_variance_log(normalized)
         relative_logs.append(relative_log)
     return common_scale, tuple(relative_logs)
 
@@ -119,20 +120,251 @@ def _divide_log_quantity(log_numerator: float, denominator: float) -> float:
 
 
 def _tail_probability(
-    statistic: float,
-    alternative: Alternative,
-    *,
-    cdf: Callable[[float], float],
-    sf: Callable[[float], float],
+    log_lower: float, log_upper: float, alternative: Alternative
 ) -> float:
-    """Evaluate a one- or two-sided probability with stable opposite tails."""
-    lower = float(cdf(statistic))
-    upper = float(sf(statistic))
+    """Convert log tails only after choosing and, if necessary, doubling one."""
     if alternative == "less":
-        return lower
+        return math.exp(log_lower)
     if alternative == "greater":
-        return upper
-    return min(1.0, 2.0 * min(lower, upper))
+        return math.exp(log_upper)
+    return math.exp(min(0.0, math.log(2.0) + min(log_lower, log_upper)))
+
+
+def _chi_square_log_tails(log_statistic: float, df: float) -> tuple[float, float]:
+    """Retain lower-tail information even when the pivot is below binary64."""
+    if log_statistic < _LOG_EPSILON:
+        # P(a, z) = z**a / Gamma(a+1) * (1 + O(z)), with z = X²/2.
+        # Integrating exp(-t) between exp(-z) and 1 bounds the relative
+        # error of this leading term by exp(z)-1 < epsilon/2 here.
+        log_lower = 0.5 * df * (log_statistic - math.log(2.0)) - float(
+            special.gammaln(0.5 * df + 1.0)
+        )
+        return log_lower, math.log1p(-math.exp(log_lower))
+    statistic = _exp_extended(log_statistic)
+    if math.isinf(statistic):
+        return 0.0, -math.inf
+    log_lower = float(stats.chi2.logcdf(statistic, df))
+    log_upper = float(stats.chi2.logsf(statistic, df))
+    # SciPy can underflow an intermediate even for representable subnormal
+    # probabilities.  Reevaluate before that range with a scaled recurrence.
+    if log_lower < math.log(_TAIL_REEVALUATION_THRESHOLD):
+        log_lower = _gamma_log_lower_series(0.5 * statistic, 0.5 * df)
+        return log_lower, math.log1p(-math.exp(log_lower))
+    if log_upper < math.log(_TAIL_REEVALUATION_THRESHOLD):
+        log_upper = _chi_square_log_upper_recurrence(0.5 * statistic, 0.5 * df)
+        return math.log1p(-math.exp(log_upper)), log_upper
+    return log_lower, log_upper
+
+
+def _gamma_log_lower_series(value: float, shape: float) -> float:
+    """Sum the positive lower-gamma series, bounding its remaining terms."""
+    term = total = 1.0
+    epsilon = float(np.finfo(np.float64).eps)
+    for index in range(1, _TAIL_SERIES_LIMIT + 1):
+        term *= value / (shape + index)
+        total += term
+        ratio = value / (shape + index + 1.0)
+        if ratio < 1.0 and term * ratio / (1.0 - ratio) <= epsilon * total:
+            return (
+                shape * math.log(value)
+                - value
+                - float(special.gammaln(shape + 1.0))
+                + math.log(total)
+            )
+    raise ArithmeticError("lower chi-square tail series did not converge")
+
+
+def _chi_square_log_upper_recurrence(value: float, shape: float) -> float:
+    """Use the finite positive recurrence for integer/half-integer shapes.
+
+    Repeatedly apply Q(a,z) = Q(a-1,z) + z**(a-1) exp(-z)/Gamma(a).
+    Factoring out the largest term avoids underflow.  The base cases are
+    Q(1,z)=exp(-z) and Q(1/2,z)=exp(-z) erfcx(sqrt(z)).
+    """
+    if shape == 0.5:
+        return -value + math.log(float(special.erfcx(math.sqrt(value))))
+    log_factor = (
+        -value + (shape - 1.0) * math.log(value) - float(special.gammaln(shape))
+    )
+    term = total = 1.0
+    remaining = shape - 1.0
+    epsilon = float(np.finfo(np.float64).eps)
+    for _ in range(_TAIL_SERIES_LIMIT):
+        if remaining == 0.0:
+            return log_factor + math.log(total)
+        ratio = remaining / value
+        # Remaining ratios decrease.  The half-integer base factor
+        # sqrt(pi*z)*erfcx(sqrt(z)) is <= 1, so the geometric remainder
+        # is an upper bound in the half-integer case as well.
+        if ratio < 1.0 and term * ratio / (1.0 - ratio) <= epsilon * total:
+            return log_factor + math.log(total)
+        term *= ratio
+        if remaining == 0.5:
+            term *= (
+                math.sqrt(math.pi)
+                * math.sqrt(value)
+                * float(special.erfcx(math.sqrt(value)))
+            )
+            return log_factor + math.log(total + term)
+        total += term
+        remaining -= 1.0
+    raise ArithmeticError("upper chi-square tail recurrence did not converge")
+
+
+def _softplus(value: float) -> float:
+    """Evaluate log(1 + exp(value)) without overflowing."""
+    if value > 0.0:
+        return value + math.log1p(math.exp(-value))
+    return math.log1p(math.exp(value))
+
+
+def _log_beta_normalizer(shape1: float, shape2: float) -> float:
+    """Avoid log-gamma cancellation for short integer/half-integer shapes."""
+    small, large = sorted((shape1, shape2))
+    if large >= 10_000.0 and small <= 32.0:
+        log_large = math.log(large)
+        if small.is_integer():
+            # B(a,m) = Gamma(m) / product(a+j, j=0,...,m-1).
+            return math.lgamma(small) - math.fsum(
+                log_large + math.log1p(index / large) for index in range(int(small))
+            )
+        if (2.0 * small).is_integer():
+            # Stirling's gamma-ratio expansion gives log B(a,1/2).
+            # The next term is 1/(640*a**5), below 1.6e-23 at a=10,000.
+            inverse = 1.0 / large
+            base = (
+                0.5 * (math.log(math.pi) - log_large)
+                + inverse / 8.0
+                - inverse**3 / 192.0
+            )
+            # B(a,b+1) = b/(a+b) * B(a,b), starting from b=1/2.
+            return base + math.fsum(
+                math.log(index + 0.5) - log_large - math.log1p((index + 0.5) / large)
+                for index in range(int(small - 0.5))
+            )
+    return float(special.betaln(shape1, shape2))
+
+
+def _beta_log_tails(
+    log_value: float, shape1: float, shape2: float
+) -> tuple[float, float]:
+    """Evaluate beta tails using a log argument that is at most log(1/2)."""
+    if log_value < _LOG_EPSILON - math.log(max(1.0, shape2)) - math.log(2.0):
+        # I_x(a,b) = x**a/(a B(a,b)) times the weighted mean of
+        # (1-t)**(b-1), 0 <= t <= x.  The threshold ensures that the log
+        # of this factor has magnitude less than epsilon.  This bound also
+        # covers b=1/2 and is valid when exp(log_value) underflows entirely.
+        log_lower = (
+            shape1 * log_value - math.log(shape1) - _log_beta_normalizer(shape1, shape2)
+        )
+        return log_lower, math.log1p(-math.exp(log_lower))
+    value = math.exp(log_value)
+    lower = float(special.betainc(shape1, shape2, value))
+    upper = float(special.betaincc(shape1, shape2, value))
+    if lower < _TAIL_REEVALUATION_THRESHOLD:
+        log_lower = _beta_log_lower_series(log_value, shape1, shape2)
+        return log_lower, math.log1p(-math.exp(log_lower))
+    if upper < _TAIL_REEVALUATION_THRESHOLD:
+        log_upper = _beta_log_lower_series(math.log1p(-value), shape2, shape1)
+        return math.log1p(-math.exp(log_upper)), log_upper
+    # Retain whichever direct tail is smaller.  Some beta implementations
+    # lose accuracy evaluating a probability close to one even when the
+    # opposite small tail is accurate; log1p preserves their complement.
+    if lower <= upper:
+        return math.log(lower) if lower > 0.0 else -math.inf, math.log1p(-lower)
+    return math.log1p(-upper), math.log(upper) if upper > 0.0 else -math.inf
+
+
+def _beta_log_lower_series(log_value: float, shape1: float, shape2: float) -> float:
+    """Evaluate DLMF 8.17.8 with a positive, geometrically bounded series."""
+    value = math.exp(log_value)
+    if value > 0.9:
+        # In an unbalanced F distribution the small probability can have a
+        # beta argument close to one.  Its positive series then approaches
+        # a unit term ratio; the lower-tail continued fraction is faster.
+        return _beta_log_lower_continued_fraction(log_value, shape1, shape2)
+    term = total = 1.0
+    epsilon = float(np.finfo(np.float64).eps)
+    for index in range(_TAIL_SERIES_LIMIT):
+        term *= value * (shape1 + shape2 + index) / (shape1 + 1.0 + index)
+        total += term
+        # Ratios approach value monotonically.  The maximum of the next
+        # ratio and value therefore bounds every subsequent ratio.
+        ratio = max(
+            value,
+            value * (shape1 + shape2 + index + 1.0) / (shape1 + index + 2.0),
+        )
+        if ratio < 1.0 and term * ratio / (1.0 - ratio) <= epsilon * total:
+            return (
+                shape1 * log_value
+                + shape2 * math.log1p(-value)
+                - math.log(shape1)
+                - _log_beta_normalizer(shape1, shape2)
+                + math.log(total)
+            )
+    raise ArithmeticError("F tail series did not converge")
+
+
+def _beta_log_lower_continued_fraction(
+    log_value: float, shape1: float, shape2: float
+) -> float:
+    """Evaluate the small beta tail by DLMF 8.17.22--23 and modified Lentz."""
+    value = math.exp(log_value)
+    complement = -math.expm1(log_value)
+    # This equals 1 - (a+b)*x/(a+1), retaining 1-x near the endpoint.
+    denominator = complement + value * (1.0 - shape2) / (shape1 + 1.0)
+    reciprocal = 1.0 / denominator
+    numerator = 1.0
+    fraction = reciprocal
+    floor = float(np.finfo(np.float64).tiny / np.finfo(np.float64).eps)
+    epsilon = float(np.finfo(np.float64).eps)
+    stable_iterations = 0
+    for index in range(1, _TAIL_SERIES_LIMIT + 1):
+        twice_index = 2.0 * index
+        coefficients = (
+            index
+            * (shape2 - index)
+            * value
+            / ((shape1 + twice_index - 1.0) * (shape1 + twice_index)),
+            -(shape1 + index)
+            * (shape1 + shape2 + index)
+            * value
+            / ((shape1 + twice_index) * (shape1 + twice_index + 1.0)),
+        )
+        previous = fraction
+        for coefficient in coefficients:
+            denominator = 1.0 + coefficient * reciprocal
+            numerator = 1.0 + coefficient / numerator
+            if abs(denominator) < floor:
+                denominator = math.copysign(floor, denominator)
+            if abs(numerator) < floor:
+                numerator = math.copysign(floor, numerator)
+            reciprocal = 1.0 / denominator
+            fraction *= reciprocal * numerator
+        if abs(fraction - previous) <= 4.0 * epsilon * abs(fraction):
+            stable_iterations += 1
+        else:
+            stable_iterations = 0
+        if stable_iterations >= 3:
+            return (
+                shape1 * log_value
+                + shape2 * math.log(complement)
+                - math.log(shape1)
+                - _log_beta_normalizer(shape1, shape2)
+                + math.log(fraction)
+            )
+    raise ArithmeticError("F tail continued fraction did not converge")
+
+
+def _f_log_tails(
+    log_statistic: float, first_df: float, second_df: float
+) -> tuple[float, float]:
+    """Use complementary beta arguments calculated directly from log(F)."""
+    logit = log_statistic + math.log(first_df) - math.log(second_df)
+    if logit <= 0.0:
+        return _beta_log_tails(-_softplus(-logit), 0.5 * first_df, 0.5 * second_df)
+    upper, lower = _beta_log_tails(-_softplus(logit), 0.5 * second_df, 0.5 * first_df)
+    return lower, upper
 
 
 def _confidence_interval(
@@ -141,16 +373,17 @@ def _confidence_interval(
     confidence_level: float,
     *,
     ppf: Callable[[float], float],
+    isf: Callable[[float], float],
 ) -> tuple[float, float]:
     """Invert a positive pivot to form a one- or two-sided interval."""
     alpha = 1.0 - confidence_level
     if alternative == "less":
         return (0.0, _divide_log_quantity(log_estimate, float(ppf(alpha))))
     if alternative == "greater":
-        lower = _divide_log_quantity(log_estimate, float(ppf(1.0 - alpha)))
+        lower = _divide_log_quantity(log_estimate, float(isf(alpha)))
         return (lower, math.inf)
 
-    lower = _divide_log_quantity(log_estimate, float(ppf(1.0 - alpha / 2.0)))
+    lower = _divide_log_quantity(log_estimate, float(isf(alpha / 2.0)))
     upper = _divide_log_quantity(log_estimate, float(ppf(alpha / 2.0)))
     return (lower, upper)
 
@@ -206,7 +439,8 @@ def chisquare_1samp(
     -----
     Exact chi-square calibration requires independent normal observations.  A
     constant sample is handled as the boundary statistic zero rather than as
-    an arithmetic error.
+    an arithmetic error.  Tail probabilities retain the log pivot even when
+    its displayed value rounds to zero or infinity.
 
     References
     ----------
@@ -228,12 +462,8 @@ def chisquare_1samp(
             math.log(degrees_of_freedom) + log_sample_variance - math.log(null_variance)
         )
     statistic = _exp_extended(log_statistic)
-    pvalue = _tail_probability(
-        statistic,
-        selected_alternative,
-        cdf=lambda value: float(stats.chi2.cdf(value, degrees_of_freedom)),
-        sf=lambda value: float(stats.chi2.sf(value, degrees_of_freedom)),
-    )
+    log_lower, log_upper = _chi_square_log_tails(log_statistic, degrees_of_freedom)
+    pvalue = _tail_probability(log_lower, log_upper, selected_alternative)
 
     log_interval_numerator = (
         -math.inf
@@ -245,6 +475,7 @@ def chisquare_1samp(
         selected_alternative,
         level,
         ppf=lambda probability: float(stats.chi2.ppf(probability, degrees_of_freedom)),
+        isf=lambda probability: float(stats.chi2.isf(probability, degrees_of_freedom)),
     )
     sample_variance = _exp_extended(log_sample_variance)
 
@@ -275,7 +506,8 @@ def f_2samp(
     The statistic is the unbiased sample variance of ``x`` divided by that of
     ``y``.  Both sample variances must be strictly positive; constant samples
     are rejected explicitly because the ratio and its confidence interval are
-    then degenerate.
+    then degenerate.  P-values use the log ratio, so a statistic displayed as
+    zero or infinity can still have a positive, representable tail probability.
 
     References
     ----------
@@ -298,17 +530,14 @@ def f_2samp(
     log_second_variance = relative_second_variance + log_common_square
     log_ratio = relative_first_variance - relative_second_variance
     statistic = _exp_extended(log_ratio)
-    pvalue = _tail_probability(
-        statistic,
-        selected_alternative,
-        cdf=lambda value: float(stats.f.cdf(value, first_df, second_df)),
-        sf=lambda value: float(stats.f.sf(value, first_df, second_df)),
-    )
+    log_lower, log_upper = _f_log_tails(log_ratio, first_df, second_df)
+    pvalue = _tail_probability(log_lower, log_upper, selected_alternative)
     interval = _confidence_interval(
         log_ratio,
         selected_alternative,
         level,
         ppf=lambda probability: float(stats.f.ppf(probability, first_df, second_df)),
+        isf=lambda probability: float(stats.f.isf(probability, first_df, second_df)),
     )
 
     first_variance = _exp_extended(log_first_variance)

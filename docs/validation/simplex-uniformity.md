@@ -9,6 +9,10 @@ $$
 which is the uniform distribution with respect to volume on the
 $(k-1)$-dimensional probability simplex.
 
+The native additions have separate ledgers for [EHY simplex
+uniformity](ehy-simplex.md) and [alpha-energy compositional
+equality](alpha-energy-simplex.md).
+
 ## Likelihood-ratio statistics
 
 For $n$ strict-interior compositions and positive Dirichlet parameter

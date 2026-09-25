@@ -16,10 +16,12 @@ multivariate, rectangular, or compositional.
 | One or more covariance matrices | One, two, or several multivariate samples | [Covariance](../api/covariance.md) |
 | Mean and variance together | One or two univariate normal samples | [Mean and variance](../api/mean-variance.md) |
 | Mean vector and covariance together | One or two multivariate samples | [Mean and covariance](../api/mean-covariance.md) |
-| An entire distribution | Two independent samples | [Equality of distributions](../api/equaldist.md) |
-| Fit to a normal distribution | One univariate sample | [Normality](../api/normality.md) |
+| An entire distribution | Two or more independent samples | [Equality of distributions](../api/equaldist.md) |
+| Independence | Two or more row-paired random vectors | [Independence](../api/independence.md) |
+| Fit to a normal distribution | One univariate or multivariate sample | [Normality](../api/normality.md) |
 | Fit to a rectangular uniform distribution | One multivariate sample | [Rectangular uniformity](../api/uniformity.md) |
 | Fit to uniformity on a probability simplex | One compositional sample | [Simplex uniformity](../api/simplex.md) |
+| A circular uniformity or equality law | One or more circular samples | [Circular data](../api/circular.md) |
 
 A test of a mean, variance, or covariance answers a narrower question than a
 test of an entire distribution. Failure to reject one equality does not
@@ -36,8 +38,8 @@ joint null fails; it does not identify which component changed.
 | One scalar variance | `chisquare_1samp` | Normal-theory test against a specified variance |
 | Two scalar variances | `f_2samp` | Normal-theory variance-ratio test |
 | Several scalar variances or spreads | `bartlett`, `levene`, `brown_forsythe` | Bartlett is normal-theory; Levene and Brown--Forsythe use deviations from means and medians |
-| One mean and variance jointly | `as_1samp` | Asymptotic likelihood-ratio test against specified normal parameters |
-| Two means and variances jointly | `pn_2samp`, `pl_2samp`, `muirhead_2samp`, `zxc_2samp`, `lrt_2samp` | Respectively beta approximation, combined component tests, corrected approximation, exact calibration, and asymptotic LRT |
+| One mean and variance jointly | `lrt_1samp` | Asymptotic likelihood-ratio test against specified normal parameters |
+| Two means and variances jointly | `pn_2samp`, `pl_2samp`, `muirhead_2samp`, `exact_lrt_2samp`, `lrt_2samp` | Respectively beta approximation, combined component tests, corrected approximation, exact calibration, and asymptotic LRT |
 | Univariate normality | `shapiro_wilk`, `shapiro_francia`, `jarque_bera`, `adjusted_jarque_bera`, `robust_jarque_bera` | Shapiro tests use order statistics; moment tests target skewness and kurtosis and default to finite-sample Monte Carlo calibration |
 
 Choose a joint mean-and-variance test only when the scientific null really
@@ -58,7 +60,9 @@ Here `n` denotes sample size and `p` the number of features.
 | Coordinate-standardized dense shift | `sd_1samp`, `sd_2samp` | Requires usable marginal variance estimates |
 | Unequal-covariance two-sample mean vector | `yao_2samp`, `johansen_2samp`, `nvm_2samp`, `ky_2samp` | Low-dimensional Behrens--Fisher approximations with method-specific degrees of freedom |
 | Randomized high-dimensional comparison | `ljw_2samp`, `thulin_2samp` | Record projection or subspace controls and `rng`; Monte Carlo mode fixes auxiliary randomness across permutations |
-| Coordinatewise Bayesian evidence | `lyl_2samp` | Returns maximum and component log Bayes factors, not a p-value |
+| Dense unequal-covariance high-dimensional shift | `cq_2samp` | Chen--Qin U-statistic under its factor, moment, and trace conditions |
+| Fixed-small-sample, increasing-dimension design | `li_1samp`, `li_2samp`, `li_ksamp` | Student calibration; the k-sample construction uses a minimum-size reference group, and the first minimum in caller order is used when sizes tie |
+| Coordinatewise Bayesian evidence | `maximum_pairwise_bayes_factor_2samp` | Returns maximum and component log Bayes factors, not a p-value |
 | Several groups | `schott_ksamp`, `zx_ksamp`, `cph_ksamp` | Match common- versus unequal-covariance assumptions and the advertised dimensional regime |
 
 High-dimensional does not mean assumption-free. Trace, diagonal,
@@ -71,9 +75,10 @@ size and dimension alone.
 
 | Question and regime | Procedure choices | Main distinction |
 |---|---|---|
-| One covariance against a specified matrix | `wl_1samp` | Random-projection method; record `rng` and verify the advertised Gaussian regime |
+| One covariance against a specified matrix | `wl_1samp`, `czz_identity_1samp` | Random-projection versus high-dimensional U-statistic calibration; CZZ requires an SPD target |
+| One covariance is spherical | `czz_sphericity_1samp` | High-dimensional U-statistic test with unknown scalar covariance level |
 | Two high-dimensional covariances | `lc_2samp`, `clx_2samp`, `wl_2samp` | Li--Chen targets a global Frobenius departure, CLX a maximum standardized entry, and Wu--Li projected variance ratios |
-| Two covariances, Bayesian evidence | `lyl_2samp` | Uses the paper's known-zero-mean Gaussian model and returns conditional-regression log Bayes-factor evidence without a universal threshold |
+| Two covariances, Bayesian evidence | `maximum_pairwise_bayes_factor_2samp` | Uses the paper's known-zero-mean Gaussian model and returns conditional-regression log Bayes-factor evidence without a universal threshold |
 | Several covariance matrices | `schott_2001_ksamp`, `schott_2007_ksamp` | The 2001 procedure uses a pooled inverse; the 2007 procedure targets a high-dimensional regime |
 | One mean vector and covariance against specified values | `llzs_1samp`, `lrt_1samp` | LLZS is high-dimensional; the LRT is fixed-dimensional and needs an invertible fitted covariance |
 | Two mean vectors and covariances jointly | `hn_2samp` | High-dimensional joint test under its source paper's moment and trace conditions |
@@ -81,7 +86,7 @@ size and dimension alone.
 The covariance CLX procedure is public, but Fisher's covariance procedure and
 SHT's distinct Cai--Liu--Xia mean
 test is validation-blocked and therefore does not appear in the selection
-table. The two public `lyl_2samp` functions are likewise distinct procedures;
+table. The two public `maximum_pairwise_bayes_factor_2samp` functions are likewise distinct procedures;
 module qualification is part of each public name. In particular, the
 covariance version does not estimate or remove a mean: center observations
 externally only when a scientific design justifies treating the resulting
@@ -92,9 +97,20 @@ values as observations from the paper's fixed zero-mean model.
 | Null hypothesis | Procedure | Design boundary |
 |---|---|---|
 | Two independent samples have the same distribution | `equaldist.bg_2samp` | Pooled observations must be exchangeable; use exact enumeration when feasible or corrected Monte Carlo calibration |
+| Two or more distributions are equal | `equaldist.energy_ksamp` | Euclidean energy/DISCO omnibus test; finite first distance moment and pooled exchangeability |
+| Two distributions are equal | `equaldist.mmd_2samp` | Characteristic RBF or Laplacian kernel with a prespecified or frozen median bandwidth |
+| Two paired random vectors are independent | `independence.distance_covariance`, `independence.hsic` | Distance covariance needs finite first moments; HSIC needs a characteristic built-in kernel; neither is universally powerful in high dimensions |
+| Two or more paired blocks are mutually independent | `independence.dhsic`, `independence.distance_multivariance` | Can detect higher-order dependence; all blocks share rows and `dhsic` requires `n >= 2*d` |
+| Multivariate observations are normally distributed | `normality.henze_zirkler`, `normality.energy` | Full-rank composite normal null; nuisance parameters are refitted in every null simulation |
 | Observations are uniform on declared rectangular bounds | `uniformity.ym_interpoint` | Monte Carlo is the default calibration for `q1`, `q2`, and `q3`; boundary points are allowed |
 | Observations are uniform on declared rectangular bounds | `uniformity.ym_quantile` | Every coordinate must be strictly inside its bounds before the normal-quantile transform |
+| Observations are uniform on a declared rectangle, omnibus nearest-neighbor alternative | `uniformity.ehy` | Requires prespecified `alpha != 1` and `n_neighbors` |
 | Compositions are uniform on a probability simplex | `simplex.uniformity` | Rows must lie in the strict simplex interior; choose a symmetric or general Dirichlet alternative |
+| Compositions are uniformly distributed on the simplex, omnibus nearest-neighbor alternative | `simplex.ehy_uniformity` | Requires prespecified `alpha != 1` and `n_neighbors`; boundary compositions are valid |
+| Two or more compositional distributions are equal | `simplex.alpha_energy_ksamp` | Prespecify one alpha; zero components require `alpha > 0` |
+| Circular observations have a preferred first-harmonic direction | `circular.rayleigh` | Targeted rather than omnibus; specify the measurement period |
+| Circular observations are nonuniform | `circular.watson`, `circular.hermans_rasson` | Omnibus simulation-calibrated tests; Hermans--Rasson is designed for multimodal sensitivity |
+| Two or more circular distributions are equal | `circular.mardia_watson_wheeler_ksamp` | Continuous pooled angles, no exact ties, and pooled-label exchangeability |
 
 The bounds in a rectangular-uniformity test and the simplex itself are part of
 the null model. Estimating support limits from the same data changes that

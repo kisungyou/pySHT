@@ -1,25 +1,32 @@
 # Roadmap
 
-pySHT 0.1.0 is the initial public release. It maps the SHT 0.1.9 statistical
-catalog through a validation-driven Python API rather than treating a
-mechanical port as sufficient evidence. The project remains pre-1.0: changes
-to the public surface are possible, but they must be intentional, tested, and
-recorded.
+pySHT 0.1.0 is the initial public release. The combined 0.2--0.5 development
+line preserves its validation-driven SHT compatibility core and adds
+independently sourced research methods rather than treating a larger catalog
+as sufficient evidence.
+The project remains pre-1.0: changes to the public surface are possible, but
+they must be intentional, tested, and recorded.
 
 ## Implemented expansion
 
-- 51 public canonical Python functions cover 52 of the 54 public SHT
+- The 51-function compatibility core covers 52 of the 54 public SHT
   statistical routine identities; the one shared implementation and the
   validation-blocked mean CLX and Fisher identities are documented in the
   [migration crosswalk](../migration/from-r.md).
+- Twenty-one validated pySHT-native methods expand the development API to 72
+  canonical public functions. They add dense and fixed-small-sample mean
+  tests, one-sample covariance tests, energy/kernel distribution tests,
+  pairwise and mutual independence, multivariate normality, nearest-neighbor
+  rectangular and simplex uniformity, compositional equality, and circular
+  inference.
 - Functions use lowercase `snake_case`, live in scientific category modules,
   and are not re-exported from top-level `pysht`.
 - Immutable result types provide R `htest`-style frequentist output,
   resampling diagnostics, named numerical diagnostics, and log-domain Bayesian
   evidence where appropriate.
 - The mean, variance, covariance, joint-parameter, equality-of-distributions,
-  normality, rectangular-uniformity, and simplex families have public API and
-  validation pages.
+  independence, normality, rectangular-uniformity, simplex, and circular
+  families have public API and validation pages.
 - Shared validators, local random-number handling, stable linear algebra,
   log-tail calculations, optimization checks, exact enumeration, and corrected
   Monte Carlo inference support the scientific functions.
@@ -54,7 +61,31 @@ Monte-Carlo comparisons, corrected tail counts, and fixed auxiliary
 randomness. A method is not silently switched to a different statistic when a
 gate fails.
 
-## Priorities after 0.1.0
+## Current expansion status
+
+The research program is organized by scientific dependency rather than by
+catalog pressure:
+
+- the foundational Chen--Qin, Li, CZZ, energy, distance-covariance, Rayleigh,
+  and Watson methods are implemented and public;
+- kernel distribution tests, mutual-independence, multivariate-normality,
+  Hermans--Rasson, and circular multi-sample methods are implemented and
+  public;
+- Xue--Yao and Yu--Li--Xue have private research implementations but failed or
+  have not completed the calibration evidence required for public exposure;
+  JWJWZ and YLXL remain equation-audit targets with no callable; and
+- EHY rectangular/simplex and alpha-energy compositional methods are
+  implemented with explicitly prespecified tuning parameters.
+- Ball Divergence remains private because a floating-distance equality rule
+  has not yet reproduced literal closed-ball membership across both exact
+  geometric symmetries and representably unequal near-ties.
+
+The [native-method catalog](../methods/native-methods.md) is the authoritative
+public-versus-blocked record. A blocked candidate does not receive a
+`NotImplementedError` placeholder and does not delay an unrelated method that
+has passed its own gates.
+
+## Priorities after the current expansion
 
 ### Broaden the scientific evidence
 
@@ -75,8 +106,9 @@ gate fails.
 - retain dependency versions, integer seeds, raw rejection counts, and stream
   construction for every new validation table;
 - extend wheel coverage when supported hosted runners become available; and
-- automate deployment of the already warning-clean website while preserving
-  the simple navigation and validation-ledger structure.
+- keep the warning-clean website and combined GitHub Pages deployment current
+  while preserving the simple navigation and single validation-ledger sidebar
+  entry.
 
 ### Stabilize the public contract
 

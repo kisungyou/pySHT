@@ -15,6 +15,24 @@ subspaces, permutation statistics, exceedances, the corrected Monte Carlo
 p-value, its standard error, and its 95% binomial interval. Separate positive
 feature rescalings leave the result unchanged when the seed is fixed.
 
+Each allocation is placed in deterministic row/group order before computing
+the subspace average. Upper-tail comparisons include relative roundoff ties
+within $100\epsilon|T_{\mathrm{obs}}|$. A six-row, two-feature regression
+enumerates all 20 allocations independently: the two mathematically tied
+upper-tail allocations have exact probability 0.1. With one full-dimensional
+subspace, 9,999 draws and seed 123, the corrected implementation counts 1,018
+exceedances and reports 0.1019; swapping groups or reordering rows gives the
+same result. Each quadratic is evaluated directly from an SVD of equilibrated
+centered selected observations, simultaneously checking rank and avoiding a
+scatter matrix that squares their condition number. Dependent directions
+cannot become artificially positive definite through scatter-matrix rounding.
+
+Each Hotelling statistic is formed directly from the selected $k$ columns.
+The implementation never constructs a full $p\times p$ identity matrix or
+pooled covariance for a $k$-column subspace, so working storage for this
+kernel is governed by the selected dimension rather than quadratically by the
+ambient feature count. A 5,000-feature allocation guard covers this property.
+
 The direct paper locations are Algorithm 2 (permutation test, p. 6),
 Algorithm 3 (random-subspace statistic, p. 8), Proposition 3 (conditional
 marginal-scale and location invariance, p. 9), and Section 3.3 (the recommended

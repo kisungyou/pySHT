@@ -8,15 +8,21 @@ import unittest
 import numpy as np
 from scipy import special, stats
 
+from pysht import mean_variance
 from pysht.mean_variance import (
     _exact_lrt_pvalue,
-    as_1samp,
+    exact_lrt_2samp,
+    lrt_1samp,
     lrt_2samp,
     muirhead_2samp,
     pl_2samp,
     pn_2samp,
-    zxc_2samp,
 )
+
+
+def test_pre_0_2_names_are_not_callable_aliases() -> None:
+    assert not hasattr(mean_variance, "as_1samp")
+    assert not hasattr(mean_variance, "zxc_2samp")
 
 
 class TestMeanVarianceOneSample(unittest.TestCase):
@@ -24,7 +30,7 @@ class TestMeanVarianceOneSample(unittest.TestCase):
         self.x = np.array([-1.2, -0.4, 0.1, 0.5, 0.8, 1.4, 2.1])
 
     def test_as_matches_literal_likelihood_ratio(self) -> None:
-        result = as_1samp(self.x, popmean=0.2, variance=1.7)
+        result = lrt_1samp(self.x, popmean=0.2, variance=1.7)
         n = self.x.size
         mean = float(np.mean(self.x))
         mle_variance = float(np.sum((self.x - mean) ** 2) / n)
@@ -41,10 +47,10 @@ class TestMeanVarianceOneSample(unittest.TestCase):
         self.assertIn("Arnold-Shavelle", str(result))
 
     def test_as_is_joint_location_scale_invariant(self) -> None:
-        baseline = as_1samp(self.x, popmean=0.2, variance=1.7)
+        baseline = lrt_1samp(self.x, popmean=0.2, variance=1.7)
         scale = 1e100
         shift = -3e100
-        transformed = as_1samp(
+        transformed = lrt_1samp(
             shift + scale * self.x,
             popmean=shift + scale * 0.2,
             variance=scale**2 * 1.7,
@@ -55,17 +61,17 @@ class TestMeanVarianceOneSample(unittest.TestCase):
 
     def test_as_rejects_invalid_null_or_boundary_sample(self) -> None:
         with self.assertRaises(ValueError):
-            as_1samp([1.0, 1.0, 1.0])
+            lrt_1samp([1.0, 1.0, 1.0])
         with self.assertRaises(ValueError):
-            as_1samp(self.x, variance=0.0)
+            lrt_1samp(self.x, variance=0.0)
         with self.assertRaises(TypeError):
-            as_1samp(self.x, popmean=True)
+            lrt_1samp(self.x, popmean=True)
         with self.assertRaises(TypeError):
-            as_1samp(self.x, popvariance=1.0)  # type: ignore[call-arg]
+            lrt_1samp(self.x, popvariance=1.0)  # type: ignore[call-arg]
 
     def test_as_handles_an_overwhelming_float64_scale_departure(self) -> None:
         tiny = np.array([1.0e-300, 2.0e-300, 3.0e-300, 4.0e-300])
-        result = as_1samp(tiny, variance=1.0e300)
+        result = lrt_1samp(tiny, variance=1.0e300)
 
         n = tiny.size
         scaled = tiny / 1.0e-300
@@ -97,8 +103,8 @@ class TestMeanVarianceOneSample(unittest.TestCase):
         values = shift + unit * standardized
         stable_coordinates = (values - shift) / unit
 
-        actual = as_1samp(values, popmean=shift, variance=unit**2)
-        expected = as_1samp(stable_coordinates)
+        actual = lrt_1samp(values, popmean=shift, variance=unit**2)
+        expected = lrt_1samp(stable_coordinates)
 
         np.testing.assert_allclose(actual.statistic, expected.statistic, rtol=2e-14)
         np.testing.assert_allclose(actual.pvalue, expected.pvalue, rtol=2e-14)
@@ -187,6 +193,28 @@ class TestMeanVarianceTwoSample(unittest.TestCase):
         )
         self.assertEqual(result.estimates, ())
 
+    def test_pn_retains_a_representable_tail_when_lambda_underflows(self) -> None:
+        first = np.array([-1.0e-87, 1.0e-87])
+        second = np.array([-1.0e87, 1.0e87])
+
+        actual = pn_2samp(first, second)
+        swapped = pn_2samp(second, first)
+
+        # For n=m=2 the published moment equations reduce exactly to beta
+        # shapes 3/8 and 33/32.  At this x the hypergeometric correction to
+        # I_x(a,b)=x**a/(a B(a,b)) is far below float64 resolution.
+        log_lambda = math.log(4.0) + 2.0 * math.log(1.0e-87) - 2.0 * math.log(1.0e87)
+        expected = math.exp(
+            (3.0 / 8.0) * log_lambda
+            - math.log(3.0 / 8.0)
+            - special.betaln(3.0 / 8.0, 33.0 / 32.0)
+        )
+        self.assertEqual(actual.statistic, 0.0)
+        self.assertGreater(actual.pvalue, 0.0)
+        np.testing.assert_allclose(actual.pvalue, expected, rtol=1e-12)
+        np.testing.assert_equal(swapped.statistic, actual.statistic)
+        np.testing.assert_allclose(swapped.pvalue, actual.pvalue, rtol=2e-13)
+
     def test_pl_matches_independent_component_tests(self) -> None:
         result = pl_2samp(self.x, self.y)
         t_pvalue = float(stats.ttest_ind(self.x, self.y, equal_var=True).pvalue)
@@ -242,7 +270,7 @@ class TestMeanVarianceTwoSample(unittest.TestCase):
         self.assertEqual(result.estimates, ())
 
     def test_zxc_matches_exact_dirichlet_fixture(self) -> None:
-        result = zxc_2samp(self.x, self.y)
+        result = exact_lrt_2samp(self.x, self.y)
 
         np.testing.assert_allclose(
             result.statistic, math.exp(self._literal_log_lambda())
@@ -252,7 +280,7 @@ class TestMeanVarianceTwoSample(unittest.TestCase):
         np.testing.assert_allclose(result.pvalue, 0.6918190488406402, rtol=3e-12)
 
     def test_exact_test_is_one_at_the_fitted_null_boundary(self) -> None:
-        result = zxc_2samp(self.x, self.x.copy())
+        result = exact_lrt_2samp(self.x, self.x.copy())
         np.testing.assert_allclose(result.statistic, 1.0)
         np.testing.assert_allclose(result.pvalue, 1.0)
 
@@ -260,7 +288,7 @@ class TestMeanVarianceTwoSample(unittest.TestCase):
         first = np.array([-1.0, 1.0])
         second = np.linspace(-1.0, 1.0, 20) + 3.45834340628787
 
-        result = zxc_2samp(first, second)
+        result = exact_lrt_2samp(first, second)
 
         np.testing.assert_allclose(result.pvalue, 0.00098113588247435, rtol=2e-11)
 
@@ -269,7 +297,7 @@ class TestMeanVarianceTwoSample(unittest.TestCase):
         first = np.array([-1.0, 1.0])
         second = np.array([difference - 1.0, difference + 1.0])
 
-        result = zxc_2samp(first, second)
+        result = exact_lrt_2samp(first, second)
 
         # For n=m=2 the Dirichlet(1/2,1/2,1/2) null admits a separate
         # log-coordinate quadrature oracle for P(4XY <= Lambda).
@@ -303,8 +331,8 @@ class TestMeanVarianceTwoSample(unittest.TestCase):
         first = np.array([-1.0e-87, 1.0e-87])
         second = np.array([-1.0e87, 1.0e87])
 
-        exact = zxc_2samp(first, second)
-        swapped = zxc_2samp(second, first)
+        exact = exact_lrt_2samp(first, second)
+        swapped = exact_lrt_2samp(second, first)
         asymptotic = lrt_2samp(first, second)
         combined = pl_2samp(first, second)
 
@@ -335,7 +363,13 @@ class TestMeanVarianceTwoSample(unittest.TestCase):
         first_permutation = first[[2, 0, 1]]
         second_permutation = second[[1, 2, 0]]
 
-        for method in (pn_2samp, pl_2samp, muirhead_2samp, lrt_2samp, zxc_2samp):
+        for method in (
+            pn_2samp,
+            pl_2samp,
+            muirhead_2samp,
+            lrt_2samp,
+            exact_lrt_2samp,
+        ):
             with self.subTest(method=method.__name__):
                 baseline = method(first, second)
                 permuted = method(first_permutation, second_permutation)
@@ -343,7 +377,13 @@ class TestMeanVarianceTwoSample(unittest.TestCase):
                 np.testing.assert_equal(permuted.pvalue, baseline.pvalue)
 
     def test_every_method_is_exchange_location_and_scale_invariant(self) -> None:
-        methods = (pn_2samp, pl_2samp, muirhead_2samp, lrt_2samp, zxc_2samp)
+        methods = (
+            pn_2samp,
+            pl_2samp,
+            muirhead_2samp,
+            lrt_2samp,
+            exact_lrt_2samp,
+        )
         for method in methods:
             with self.subTest(method=method.__name__):
                 baseline = method(self.x, self.y)
@@ -360,7 +400,13 @@ class TestMeanVarianceTwoSample(unittest.TestCase):
 
     def test_strong_alternative_reduces_every_pvalue(self) -> None:
         alternative = 8.0 + 3.0 * self.y
-        for method in (pn_2samp, pl_2samp, muirhead_2samp, lrt_2samp, zxc_2samp):
+        for method in (
+            pn_2samp,
+            pl_2samp,
+            muirhead_2samp,
+            lrt_2samp,
+            exact_lrt_2samp,
+        ):
             with self.subTest(method=method.__name__):
                 self.assertLess(method(self.x, alternative).pvalue, 0.01)
 
@@ -368,7 +414,13 @@ class TestMeanVarianceTwoSample(unittest.TestCase):
         tiny = np.array([1.0e-300, 2.0e-300, 3.0e-300, 4.0e-300])
         huge = np.array([0.9e300, 1.0e300, 1.1e300, 1.2e300])
 
-        for method in (pn_2samp, pl_2samp, muirhead_2samp, lrt_2samp, zxc_2samp):
+        for method in (
+            pn_2samp,
+            pl_2samp,
+            muirhead_2samp,
+            lrt_2samp,
+            exact_lrt_2samp,
+        ):
             with self.subTest(method=method.__name__):
                 forward = method(tiny, huge)
                 reverse = method(huge, tiny)
@@ -410,7 +462,13 @@ class TestMeanVarianceTwoSample(unittest.TestCase):
         stable_first = (first - anchor) / unit
         stable_second = (second - anchor) / unit
 
-        for method in (pn_2samp, pl_2samp, muirhead_2samp, lrt_2samp, zxc_2samp):
+        for method in (
+            pn_2samp,
+            pl_2samp,
+            muirhead_2samp,
+            lrt_2samp,
+            exact_lrt_2samp,
+        ):
             with self.subTest(method=method.__name__):
                 actual = method(first, second)
                 expected = method(stable_first, stable_second)
@@ -422,7 +480,13 @@ class TestMeanVarianceTwoSample(unittest.TestCase):
                 )
 
     def test_invalid_or_degenerate_samples_fail(self) -> None:
-        for method in (pn_2samp, pl_2samp, muirhead_2samp, lrt_2samp, zxc_2samp):
+        for method in (
+            pn_2samp,
+            pl_2samp,
+            muirhead_2samp,
+            lrt_2samp,
+            exact_lrt_2samp,
+        ):
             with self.subTest(method=method.__name__):
                 with self.assertRaises(ValueError):
                     method([1.0, 1.0, 1.0], self.y)

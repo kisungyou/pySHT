@@ -7,7 +7,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "pysht"
-version = "0.1.0"
+version = "0.5.0.dev0"
 description = "Validated statistical hypothesis tests for scientific Python"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -39,8 +39,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://kisungyou.com/pysht/"
-Documentation = "https://kisungyou.com/pysht/"
+Homepage = "https://www.kisungyou.com/pysht/"
+Documentation = "https://www.kisungyou.com/pysht/"
 Source = "https://github.com/kisungyou/pySHT"
 Issues = "https://github.com/kisungyou/pySHT/issues"
 

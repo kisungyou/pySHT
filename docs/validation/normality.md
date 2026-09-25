@@ -6,6 +6,9 @@ investigation. Primary formulas, independent NumPy calculations, SciPy's
 Shapiro implementation, invariance checks, and null simulation are the
 correctness oracles.
 
+The pySHT-native multivariate procedures have method-specific ledgers:
+[Henze--Zirkler](henze-zirkler.md) and [energy normality](energy-normality.md).
+
 ## Shapiro--Wilk and Shapiro--Francia
 
 `shapiro_wilk` delegates the statistic and p-value approximation to

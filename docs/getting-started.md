@@ -96,8 +96,9 @@ checklist.
 
 - [Choose a test](user-guide/choose-a-test.md) from the scientific question.
 - [Understand result objects](user-guide/results.md) and their interpretation.
-- Inspect the complete [API reference](api/index.md), organized in SHT's
-  `[0]`--`[10]` category order.
+- Inspect the complete [API reference](api/index.md): SHT-compatible categories
+  `[0]`--`[10]` followed by pySHT-native independence and circular categories
+  `[11]`--`[12]`.
 - Use the [R migration crosswalk](migration/from-r.md) to translate an SHT
   routine into its lowercase Python name.
 - Read the [validation center](validation/index.md) before relying on a method

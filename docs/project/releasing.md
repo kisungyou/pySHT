@@ -23,9 +23,8 @@ until another reviewer is available; otherwise no one can approve a release.
 ### Register the PyPI publisher
 
 Sign in to [PyPI](https://pypi.org/) with a verified email address and two-factor
-authentication. On the
-[pending-publisher page](https://pypi.org/manage/account/publishing/), register
-the following exact values:
+authentication. For the existing `pysht` project, confirm that its Trusted
+Publisher configuration uses the following exact values:
 
 | Field | Value |
 |---|---|
@@ -35,9 +34,11 @@ the following exact values:
 | Workflow | `publish.yml` |
 | Environment | `pypi` |
 
-The pending publisher creates the project during the first successful upload.
-It does not reserve the name before that upload. The workflow filename,
-repository capitalization, and environment must match exactly.
+For a new project, use the
+[pending-publisher page](https://pypi.org/manage/account/publishing/) instead.
+A pending publisher creates the project during the first successful upload;
+it does not reserve the name beforehand. The workflow filename, repository
+capitalization, and environment must match exactly.
 
 ## Release version policy
 
@@ -64,8 +65,8 @@ Use a focused release pull request. Before merging it:
    [Contributing](contributing.md), then require the GitHub CI workflow to pass.
 5. Review the public API inventory and validation status one final time.
 
-The first public release is `0.1.0`. After publishing it, move the source tree
-to the next development version, such as `0.1.1.dev0`.
+For subsequent development, use the next intended development version rather
+than reusing a published version.
 
 ## Publish
 

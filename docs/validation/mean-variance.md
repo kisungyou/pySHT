@@ -9,11 +9,11 @@ laws are the correctness oracles.
 
 | pySHT function | Primary formula basis | Independent oracle | Status |
 |---|---|---|---|
-| `as_1samp` | Arnold and Shavelle (1998), pp. 133--140; normal likelihood ratio | Literal maximized log likelihood | Public; asymptotic calibration |
+| `lrt_1samp` | Arnold and Shavelle (1998), pp. 133--140; normal likelihood ratio | Literal maximized log likelihood | Public; asymptotic calibration |
 | `pn_2samp` | Pearson and Neyman (1930; reprinted 1967, pp. 99--115); exact first two moments of the likelihood ratio | Log-gamma moment calculation and exact ZXC comparison | Public; lower beta tail corrected |
 | `pl_2samp` | Perng and Littell (1976), pp. 968--971 | Independent SciPy pooled-t and F p-values followed by Fisher's identity | Public |
 | `muirhead_2samp` | Muirhead (1982), Theorem 10.8.4, p. 370, specialized to two univariate populations | Literal second-order survival expansion and null simulation | Public; approximation limits disclosed |
-| `zxc_2samp` | Zhang, Xu, and Chen (2012), pp. 180--184; exact Dirichlet probability | High-accuracy conditional-beta quadrature and direct Dirichlet simulation | Public; exact |
+| `exact_lrt_2samp` | Zhang, Xu, and Chen (2012), pp. 180--184; exact Dirichlet probability | High-accuracy conditional-beta quadrature and direct Dirichlet simulation | Public; exact |
 | `lrt_2samp` | Wilks likelihood-ratio limit applied to the same normal likelihood | Literal maximized log likelihood | Public; asymptotic calibration |
 
 ## Shared likelihood ratio
@@ -91,7 +91,11 @@ also mislabeled this routine as Muirhead in its printed method.
 
 On the fixed ledger fixture, the corrected beta p-value is
 `0.6917901786656631`; the exact ZXC probability at the same likelihood
-ratio is `0.6918190488406402`. The 20,000-null release simulations were:
+ratio is `0.6918190488406402`. A separate extreme-scale fixture has
+$n=m=2$, for which the moment equations reduce to beta shapes $3/8$ and
+$33/32$. It evaluates the beta lower tail from $\log\Lambda$ and retains the
+representable probability `5.39880912287e-131` even though $\Lambda$
+itself underflows to zero in float64. The 20,000-null release simulations were:
 
 | $(n,m)$ | seed | 0.01 count/rate | 0.05 count/rate | 0.10 count/rate | gate |
 |---:|---:|---:|---:|---:|---:|
@@ -151,7 +155,7 @@ reports $\rho$ and the second-order coefficient as diagnostics.
 
 This approximation is not advertised for very small samples. The complete
 passing $(n,m)=(20,20)$ and failing $(7,8)$ audits appear in the explicit
-tables below. Use `zxc_2samp` for exact small-sample inference.
+tables below. Use `exact_lrt_2samp` for exact small-sample inference.
 
 ## Exact Zhang--Xu--Chen probability
 
@@ -205,8 +209,8 @@ $$
 
 | Calibration | Scenario | Seed | 0.01 count/rate | 0.05 count/rate | 0.10 count/rate | Gate |
 |---|---:|---:|---:|---:|---:|---|
-| `as_1samp`, $\chi^2_2$ | $n=50$ | 20260819 | 204 (0.01020) | 1,029 (0.05145) | 2,078 (0.10390) | Pass |
-| `as_1samp`, $\chi^2_2$ | $n=50$ | 20260820 | 221 (0.01105) | 1,022 (0.05110) | 2,036 (0.10180) | Pass |
+| `lrt_1samp`, $\chi^2_2$ | $n=50$ | 20260819 | 204 (0.01020) | 1,029 (0.05145) | 2,078 (0.10390) | Pass |
+| `lrt_1samp`, $\chi^2_2$ | $n=50$ | 20260820 | 221 (0.01105) | 1,022 (0.05110) | 2,036 (0.10180) | Pass |
 | `lrt_2samp`, $\chi^2_2$ | $n=m=75$ | 20260819 | 184 (0.00920) | 1,016 (0.05080) | 2,051 (0.10255) | Pass |
 | `lrt_2samp`, $\chi^2_2$ | $n=m=75$ | 20260820 | 204 (0.01020) | 1,002 (0.05010) | 2,082 (0.10410) | Pass |
 | `muirhead_2samp` | $n=m=20$ | 20260819 | 210 (0.01050) | 1,030 (0.05150) | 2,065 (0.10325) | Pass |
@@ -217,8 +221,8 @@ show the failures rather than hiding them:
 
 | Calibration | Scenario | Seed | 0.01 count/rate | 0.05 count/rate | 0.10 count/rate |
 |---|---:|---:|---:|---:|---:|
-| `as_1samp`, $\chi^2_2$ | $n=20$ | 20260819 | 251 (0.01255) | 1,192 (0.05960) | 2,268 (0.11340) |
-| `as_1samp`, $\chi^2_2$ | $n=20$ | 20260820 | 244 (0.01220) | 1,121 (0.05605) | 2,192 (0.10960) |
+| `lrt_1samp`, $\chi^2_2$ | $n=20$ | 20260819 | 251 (0.01255) | 1,192 (0.05960) | 2,268 (0.11340) |
+| `lrt_1samp`, $\chi^2_2$ | $n=20$ | 20260820 | 244 (0.01220) | 1,121 (0.05605) | 2,192 (0.10960) |
 | `lrt_2samp`, $\chi^2_2$ | $n=m=20$ | 20260819 | 263 (0.01315) | 1,203 (0.06015) | 2,358 (0.11790) |
 | `lrt_2samp`, $\chi^2_2$ | $n=m=20$ | 20260820 | 260 (0.01300) | 1,241 (0.06205) | 2,352 (0.11760) |
 | `muirhead_2samp` | $(n,m)=(7,8)$ | 20260819 | 474 (0.02370) | 1,441 (0.07205) | 2,556 (0.12780) |
@@ -226,12 +230,12 @@ show the failures rather than hiding them:
 
 The functions remain mathematically defined in these smaller designs, but
 their reported p-values must be interpreted as rough asymptotic
-approximations; `zxc_2samp` supplies the exact two-sample alternative.
+approximations; `exact_lrt_2samp` supplies the exact two-sample alternative.
 
 ## Targeted alternative-power audit
 
 At nominal 0.05, every public routine was run on 2,000 strong alternatives.
-For `as_1samp`, observations were $N(0.75,1.5^2)$ and the tested null was the
+For `lrt_1samp`, observations were $N(0.75,1.5^2)$ and the tested null was the
 default $(0,1)$ at $n=50$. Each two-sample row compared $N(0,1)$ with
 $N(1,2^2)$; the sample size stays in the passing calibration regime of the
 corresponding approximation. A fresh `numpy.random.default_rng(20260829)` was
@@ -240,11 +244,11 @@ public function was called once.
 
 | Procedure | Design | Rejections/2,000 | Rate |
 |---|---:|---:|---:|
-| `as_1samp` | $n=50$ | 2,000 | 1.0000 |
+| `lrt_1samp` | $n=50$ | 2,000 | 1.0000 |
 | `pn_2samp` | $n=m=20$ | 1,810 | 0.9050 |
 | `pl_2samp` | $n=m=20$ | 1,818 | 0.9090 |
 | `muirhead_2samp` | $n=m=20$ | 1,812 | 0.9060 |
-| `zxc_2samp` | $n=m=20$ | 1,810 | 0.9050 |
+| `exact_lrt_2samp` | $n=m=20$ | 1,810 | 0.9050 |
 | `lrt_2samp` | $n=m=75$ | 2,000 | 1.0000 |
 
 The near agreement among PN, Muirhead, and exact ZXC in the common design is
@@ -255,11 +259,11 @@ bound over all joint alternatives.
 
 | pySHT | SHT 0.1.9 | Deliberate change |
 |---|---|---|
-| `as_1samp` | `mvar1.1998AS`, `mvar1.LRT` | Duplicate formulas share one function; null variance keyword is `variance` |
+| `lrt_1samp` | `mvar1.1998AS`, `mvar1.LRT` | Duplicate formulas share one function; null variance keyword is `variance` |
 | `pn_2samp` | `mvar2.1930PN` | Lower beta tail, log-gamma moments, corrected method label |
 | `pl_2samp` | `mvar2.1976PL` | Stable explicit component calculations |
 | `muirhead_2samp` | `mvar2.1982Muirhead` | Survival tail and explicit truncation |
-| `zxc_2samp` | `mvar2.2012ZXC` | Stable conditional-beta integral |
+| `exact_lrt_2samp` | `mvar2.2012ZXC` | Stable conditional-beta integral |
 | `lrt_2samp` | `mvar2.LRT` | Log-domain likelihood ratio |
 
 Primary sources: [Arnold and Shavelle

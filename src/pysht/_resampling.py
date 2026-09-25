@@ -14,6 +14,19 @@ from ._validation import validate_confidence_level, validate_positive_integer
 _MAX_EXACT_FLOAT_INTEGER = 2**53 - 1
 
 
+def upper_tail_threshold(observed: float) -> float:
+    """Include numerical ties within 100 float64 epsilons of a statistic.
+
+    The relative tolerance follows SciPy's permutation-test convention. It
+    only enlarges the rejection tail, so unresolved ties are conservative.
+    An absolute floor would incorrectly merge distinct very small statistics.
+    Nonfinite endpoints retain their ordinary comparison semantics.
+    """
+    if not math.isfinite(observed):
+        return observed
+    return observed - (100.0 * np.finfo(np.float64).eps) * abs(observed)
+
+
 def exact_pvalue(exceedances: object, n_resamples: object) -> float:
     """Return ``b / B`` after validating exact-enumeration counts."""
     total = validate_positive_integer(n_resamples, name="n_resamples")
@@ -72,13 +85,14 @@ def monte_carlo_calibration(
         total / (total + 1)
     )
     alpha = 1.0 - level
+    half_alpha = alpha / 2.0
     try:
         lower = (
             0.0
             if count == 0
             else float(
                 stats.beta.ppf(
-                    alpha / 2.0,
+                    half_alpha,
                     float(count),
                     float(total - count + 1),
                 )
@@ -88,8 +102,8 @@ def monte_carlo_calibration(
             1.0
             if count == total
             else float(
-                stats.beta.ppf(
-                    1.0 - alpha / 2.0,
+                stats.beta.isf(
+                    half_alpha,
                     float(count + 1),
                     float(total - count),
                 )

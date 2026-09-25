@@ -55,6 +55,12 @@ def _whiten_against_null(
 ) -> NDArray[np.float64]:
     p = values.shape[1]
     null_mean = _null_mean(popmean, p)
+    if popcov is None:
+        with np.errstate(over="ignore", invalid="ignore"):
+            differences = values - null_mean
+        if not np.all(np.isfinite(differences)):
+            raise ValueError("the observations cannot be represented on the null scale")
+        return np.asarray(differences, dtype=np.float64, order="C")
     null_covariance = _null_covariance(popcov, p)
     try:
         factor = np.linalg.cholesky(null_covariance)
@@ -67,6 +73,16 @@ def _whiten_against_null(
     with np.errstate(over="ignore", invalid="ignore"):
         differences = values - null_mean
     if np.all(np.isfinite(differences)):
+        # Solving in the observations' original coordinates preserves valid
+        # columns with radically different units.  Resort to common scaling
+        # only if the direct solve itself leaves float64 range.
+        with np.errstate(over="ignore", invalid="ignore"):
+            try:
+                direct = np.linalg.solve(factor, differences.T).T
+            except np.linalg.LinAlgError:
+                direct = None
+        if direct is not None and np.all(np.isfinite(direct)):
+            return np.asarray(direct, dtype=np.float64, order="C")
         scale = max(
             float(np.max(np.abs(differences))),
             float(np.max(np.abs(factor))),
@@ -221,22 +237,28 @@ def lrt_1samp(
     else:
         eigenvalues = None
 
-    if eigenvalues is not None:
-        if np.any(eigenvalues <= 0.0) or not np.all(np.isfinite(eigenvalues)):
-            raise ValueError(
-                "the maximum-likelihood covariance must be positive definite"
-            )
+    if (
+        eigenvalues is not None
+        and np.all(np.isfinite(eigenvalues))
+        and np.all(eigenvalues > 0.0)
+    ):
         eigenvalue_errors = eigenvalues - 1.0
+        log_eigenvalues = np.log(eigenvalues)
+        near_identity = np.abs(eigenvalue_errors) < 0.5
+        log_eigenvalues[near_identity] = np.log1p(eigenvalue_errors[near_identity])
         with np.errstate(over="ignore", invalid="ignore"):
             divergence = float(
-                np.sum(eigenvalue_errors - np.log1p(eigenvalue_errors))
-                + np.dot(mean, mean)
+                np.sum(eigenvalue_errors - log_eigenvalues) + np.dot(mean, mean)
             )
     else:
-        magnitude = float(np.max(np.abs(standardized)))
-        if magnitude == 0.0 or not math.isfinite(magnitude):
+        # A single global scale can erase valid variation in columns whose
+        # units differ by hundreds of orders of magnitude.  Normalize every
+        # column before checking rank, then restore the quadratic and
+        # log-determinant terms analytically.
+        magnitudes = np.max(np.abs(standardized), axis=0)
+        if np.any(magnitudes <= 0.0) or not np.all(np.isfinite(magnitudes)):
             raise ValueError("the standardized observations are numerically singular")
-        scaled = standardized / magnitude
+        scaled = standardized / magnitudes
         scaled_mean, scaled_covariance = _mle_mean_covariance(scaled)
         try:
             scaled_eigenvalues = np.linalg.eigvalsh(scaled_covariance)
@@ -250,18 +272,27 @@ def lrt_1samp(
             raise ValueError(
                 "the maximum-likelihood covariance must be positive definite"
             )
-        quadratic_coefficient = float(
-            np.sum(scaled_eigenvalues) + np.dot(scaled_mean, scaled_mean)
+        quadratic_coefficients = np.diag(scaled_covariance) + scaled_mean * scaled_mean
+        if np.any(quadratic_coefficients <= 0.0) or not np.all(
+            np.isfinite(quadratic_coefficients)
+        ):
+            raise ValueError("the likelihood-ratio quadratic term is invalid")
+        log_quadratic = float(
+            np.logaddexp.reduce(
+                2.0 * np.log(magnitudes) + np.log(quadratic_coefficients)
+            )
         )
-        log_quadratic = 2.0 * math.log(magnitude) + math.log(quadratic_coefficient)
         if log_quadratic > _LOG_FLOAT_MAX:
             divergence = math.inf
         else:
             quadratic = (
                 0.0 if log_quadratic < _LOG_SMALLEST else math.exp(log_quadratic)
             )
-            log_determinant = float(
-                np.sum(np.log(scaled_eigenvalues)) + 2.0 * p * math.log(magnitude)
+            log_determinant = math.fsum(
+                (
+                    *(float(np.log(value)) for value in scaled_eigenvalues),
+                    *(2.0 * math.log(float(value)) for value in magnitudes),
+                )
             )
             divergence = quadratic - log_determinant - p
     statistic = math.inf if not math.isfinite(divergence) else max(0.0, n * divergence)

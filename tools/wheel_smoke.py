@@ -26,11 +26,15 @@ EXPECTED_FUNCTIONS: dict[str, tuple[str, ...]] = {
         "johansen_2samp",
         "nvm_2samp",
         "bs_2samp",
+        "cq_2samp",
         "ky_2samp",
         "sd_2samp",
+        "li_1samp",
+        "li_2samp",
+        "li_ksamp",
         "ljw_2samp",
         "thulin_2samp",
-        "lyl_2samp",
+        "maximum_pairwise_bayes_factor_2samp",
         "schott_ksamp",
         "zx_ksamp",
         "cph_ksamp",
@@ -43,20 +47,22 @@ EXPECTED_FUNCTIONS: dict[str, tuple[str, ...]] = {
         "brown_forsythe",
     ),
     "pysht.covariance": (
+        "czz_identity_1samp",
+        "czz_sphericity_1samp",
         "wl_1samp",
         "lc_2samp",
         "clx_2samp",
         "wl_2samp",
-        "lyl_2samp",
+        "maximum_pairwise_bayes_factor_2samp",
         "schott_2001_ksamp",
         "schott_2007_ksamp",
     ),
     "pysht.mean_variance": (
-        "as_1samp",
+        "lrt_1samp",
         "pn_2samp",
         "pl_2samp",
         "muirhead_2samp",
-        "zxc_2samp",
+        "exact_lrt_2samp",
         "lrt_2samp",
     ),
     "pysht.mean_covariance": (
@@ -64,16 +70,34 @@ EXPECTED_FUNCTIONS: dict[str, tuple[str, ...]] = {
         "lrt_1samp",
         "hn_2samp",
     ),
-    "pysht.equaldist": ("bg_2samp",),
+    "pysht.equaldist": (
+        "bg_2samp",
+        "energy_ksamp",
+        "mmd_2samp",
+    ),
+    "pysht.independence": (
+        "dhsic",
+        "distance_covariance",
+        "distance_multivariance",
+        "hsic",
+    ),
     "pysht.normality": (
         "shapiro_wilk",
         "shapiro_francia",
         "jarque_bera",
         "adjusted_jarque_bera",
+        "energy",
+        "henze_zirkler",
         "robust_jarque_bera",
     ),
-    "pysht.uniformity": ("ym_interpoint", "ym_quantile"),
-    "pysht.simplex": ("uniformity",),
+    "pysht.uniformity": ("ehy", "ym_interpoint", "ym_quantile"),
+    "pysht.simplex": ("alpha_energy_ksamp", "ehy_uniformity", "uniformity"),
+    "pysht.circular": (
+        "hermans_rasson",
+        "mardia_watson_wheeler_ksamp",
+        "rayleigh",
+        "watson",
+    ),
 }
 
 
@@ -88,7 +112,7 @@ def _load_complete_api() -> dict[str, ModuleType]:
             assert callable(getattr(module, function_name))
         function_count += len(expected_names)
 
-    assert function_count == 51
+    assert function_count == 72
     assert set(pysht.__all__) == {
         "BayesFactorTestResult",
         "DistanceTestResult",
@@ -106,6 +130,12 @@ def main() -> None:
     installed_files = files("pysht")
     assert installed_files is not None
     normalized_files = {str(path).replace("\\", "/") for path in installed_files}
+    assert "pysht/py.typed" in normalized_files
+    assert "pysht/_core.pyi" in normalized_files
+    assert any(
+        path.startswith("pysht/_core.") and path.endswith((".so", ".pyd", ".dylib"))
+        for path in normalized_files
+    )
     assert any(path.endswith("licenses/LICENSE") for path in normalized_files)
     assert any(
         path.endswith("licenses/THIRD_PARTY_LICENSES.md") for path in normalized_files
@@ -136,7 +166,7 @@ def main() -> None:
     build_info = _core.build_info()
     assert build_info["stable_abi"] is True
     print(
-        f"pysht {pysht.__version__}: installed-wheel smoke test passed for 51 functions"
+        f"pysht {pysht.__version__}: installed-wheel smoke test passed for 72 functions"
     )
 
 

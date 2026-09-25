@@ -7,11 +7,16 @@ hypotheses take precedence whenever the legacy implementation disagrees with
 the mathematics.
 
 The pinned R namespace contains 56 exports: 54 statistical routine identities
-and two dynamic adapters. The public pySHT API has 51 canonical functions
+and two dynamic adapters. The pySHT compatibility subset has 51 canonical functions
 covering 52 of those 54 identities: `mvar1.1998AS` and `mvar1.LRT` share one
 algebraically identical implementation, while `mean2.2014CLX` and
 `cov1.2012Fisher` are validation-blocked and have no public Python mapping. The
 adapters are unnecessary in Python.
+
+This page intentionally remains limited to the SHT compatibility target. The
+21 validated research methods added by pySHT are listed separately in the
+[pySHT-native method catalog](../methods/native-methods.md), so a reader can
+distinguish migration coverage from new scientific functionality.
 
 ```{index} single: migration from R
 ```
@@ -47,7 +52,7 @@ adapters are unnecessary in Python.
 | `mean2.2011LJW` | `pysht.mean.ljw_2samp` |
 | `mean2.2014CLX` | Validation-blocked; no public pySHT callable |
 | `mean2.2014Thulin` | `pysht.mean.thulin_2samp` |
-| `mean2.mxPBF` | `pysht.mean.lyl_2samp` |
+| `mean2.mxPBF` | `pysht.mean.maximum_pairwise_bayes_factor_2samp` |
 | `meank.2007Schott` | `pysht.mean.schott_ksamp` |
 | `meank.2009ZX` | `pysht.mean.zx_ksamp` |
 | `meank.2019CPH` | `pysht.mean.cph_ksamp` |
@@ -71,7 +76,7 @@ adapters are unnecessary in Python.
 | `cov2.2012LC` | `pysht.covariance.lc_2samp` |
 | `cov2.2013CLX` | `pysht.covariance.clx_2samp` |
 | `cov2.2015WL` | `pysht.covariance.wl_2samp` |
-| `cov2.mxPBF` | `pysht.covariance.lyl_2samp` (published known-zero-mean model) |
+| `cov2.mxPBF` | `pysht.covariance.maximum_pairwise_bayes_factor_2samp` (published known-zero-mean model) |
 | `covk.2001Schott` | `pysht.covariance.schott_2001_ksamp` |
 | `covk.2007Schott` | `pysht.covariance.schott_2007_ksamp` |
 
@@ -83,12 +88,12 @@ The exported-but-pkgdown-hidden `cov2.mxPBF` is included because it is in the
 
 | SHT 0.1.9 | pySHT | Note |
 |---|---|---|
-| `mvar1.1998AS` | `pysht.mean_variance.as_1samp` | Arnold--Shavelle form |
-| `mvar1.LRT` | `pysht.mean_variance.as_1samp` | Same algebra as the preceding R routine |
+| `mvar1.1998AS` | `pysht.mean_variance.lrt_1samp` | Arnold--Shavelle form |
+| `mvar1.LRT` | `pysht.mean_variance.lrt_1samp` | Same algebra as the preceding R routine |
 | `mvar2.1930PN` | `pysht.mean_variance.pn_2samp` | Lower likelihood-ratio tail corrected |
 | `mvar2.1976PL` | `pysht.mean_variance.pl_2samp` | Fisher combination |
 | `mvar2.1982Muirhead` | `pysht.mean_variance.muirhead_2samp` | Upper rejection tail corrected |
-| `mvar2.2012ZXC` | `pysht.mean_variance.zxc_2samp` | Stable exact calculation |
+| `mvar2.2012ZXC` | `pysht.mean_variance.exact_lrt_2samp` | Stable exact calculation |
 | `mvar2.LRT` | `pysht.mean_variance.lrt_2samp` | Asymptotic LRT |
 
 ### [6] Simultaneous tests for mean and covariance

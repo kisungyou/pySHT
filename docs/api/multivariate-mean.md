@@ -17,10 +17,12 @@ Observations are rows and variables are columns.
 | One or two samples; Gaussian; covariance may be singular | `dempster_1samp`, `dempster_2samp` | `mean1.1958Dempster`, `mean2.1958Dempster` |
 | One or two samples; dense high-dimensional shift; common covariance for two samples | `bs_1samp`, `bs_2samp` | `mean1.1996BS`, `mean2.1996BS` |
 | One or two samples; diagonal standardization; common covariance for two samples | `sd_1samp`, `sd_2samp` | `mean1.2008SD`, `mean2.2008SD` |
+| Two samples; dense high-dimensional shift; unequal covariance permitted | `cq_2samp` | -- |
+| One, two, or several samples; fixed small sample sizes and diverging dimension | `li_1samp`, `li_2samp`, `li_ksamp` | -- |
 | Two samples; unequal covariance; more rows than variables | `yao_2samp`, `johansen_2samp`, `nvm_2samp`, `ky_2samp` | `mean2.1965Yao`, `mean2.1980Johansen`, `mean2.1986NVM`, `mean2.2004KY` |
 | Two samples; high dimension; one Gaussian projection | `ljw_2samp` | `mean2.2011LJW` |
 | Two samples; high dimension; averaged random subspaces | `thulin_2samp` | `mean2.2014Thulin` |
-| Two samples; sparse shift; Bayesian evidence | `lyl_2samp` | `mean2.mxPBF` |
+| Two samples; sparse shift; Bayesian evidence | `maximum_pairwise_bayes_factor_2samp` | `mean2.mxPBF` |
 | Several groups; common covariance | `schott_ksamp` | `meank.2007Schott` |
 | Several groups; unequal covariance; Gaussian Scheffé transformation | `zx_ksamp` | `meank.2009ZX` |
 | Several groups; unequal covariance; high-dimensional factor model | `cph_ksamp` | `meank.2019CPH` |
@@ -29,7 +31,7 @@ An asymptotic p-value is not a guarantee that a test is suitable for a small
 dataset. Check the dimensional regime and covariance assumptions in the
 method ledger before interpreting the result. The reported `alternative`
 describes the scientific direction: small p-values are evidence that at least
-one mean vector differs. `lyl_2samp` instead returns maximum log Bayes-factor
+one mean vector differs. `maximum_pairwise_bayes_factor_2samp` instead returns maximum log Bayes-factor
 evidence and deliberately has no p-value.
 
 For numerical stability, null vectors are removed before scaling in
@@ -84,6 +86,30 @@ Validation: [classical mean](../validation/classical-mean.md),
 ## High-dimensional trace and diagonal tests
 
 ```{eval-rst}
+.. autofunction:: cq_2samp
+```
+
+```{eval-rst}
+.. autofunction:: li_1samp
+```
+
+```{eval-rst}
+.. autofunction:: li_2samp
+```
+
+```{eval-rst}
+.. autofunction:: li_ksamp
+```
+
+Chen--Qin targets dense shifts without requiring equal covariances. The Li
+tests instead target genuinely fixed, small sample sizes while dimension
+diverges. Li's two- and multi-sample Scheffé constructions pair the smaller
+sample with the first rows of larger samples, so row order must be arbitrary
+with respect to the measurements. The multi-sample method requires a uniquely
+smallest reference group; tied minima are rejected rather than selected by
+group input order.
+
+```{eval-rst}
 .. autofunction:: bs_1samp
 ```
 
@@ -99,8 +125,9 @@ Validation: [classical mean](../validation/classical-mean.md),
 .. autofunction:: sd_2samp
 ```
 
-Validation: [Bai–Saranadasa](../validation/highdim-mean/bai-saranadasa.md)
-and [Srivastava–Du](../validation/highdim-mean/srivastava-du.md).
+Validation: [Chen–Qin and Li](../validation/highdim-mean/chen-qin-li-xue-yao.md),
+[Bai–Saranadasa](../validation/highdim-mean/bai-saranadasa.md), and
+[Srivastava–Du](../validation/highdim-mean/srivastava-du.md).
 
 ## Randomized and sparse tests
 
@@ -127,7 +154,7 @@ The same pooled-exchangeability requirement applies. Canonical pooling makes
 fixed-integer-seed results invariant to row reordering and sample exchange.
 
 ```{eval-rst}
-.. autofunction:: lyl_2samp
+.. autofunction:: maximum_pairwise_bayes_factor_2samp
 ```
 
 The primary statistic is the maximum component log Bayes factor. Positive
@@ -143,7 +170,7 @@ Validation: [Lopes–Jacob–Wainwright](../validation/highdim-mean/lopes-jacob-
 [Thulin](../validation/highdim-mean/thulin.md),
 [Lee–You–Lin](../validation/highdim-mean/lee-you-lin.md).
 
-## Validation-blocked SHT identity
+## Validation-blocked methods
 
 SHT's `mean2.2014CLX` (the Cai--Liu--Xia maximum mean test) has no public pySHT
 callable. Its practical-size Gumbel calibration failed the release gate, and
@@ -151,6 +178,13 @@ neither estimated-precision branch has a passing advertised
 sparse-covariance scenario. The private implementation is retained only for
 scientific audit work; see the
 [Cai–Liu–Xia validation ledger](../validation/highdim-mean/cai-liu-xia.md).
+
+The Xue–Yao multiplier test is also withheld. Its formula implementation and
+batched fixed-multiplier oracle agree, but the requested default of 999 draws
+failed the project’s null-calibration gate at 0.01 and 0.05. There is no public
+`xy_2samp` callable; the exact pilot design and rejection counts are recorded
+in the [Chen–Qin, Li, and Xue–Yao
+ledger](../validation/highdim-mean/chen-qin-li-xue-yao.md).
 
 ## Multi-group tests
 

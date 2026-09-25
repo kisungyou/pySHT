@@ -32,7 +32,7 @@ pySHT does not expose them as callables.
 | LJW | Lopes--Jacob--Wainwright (2011) | `mean.ljw_2samp` | `mean2.2011LJW` |
 | CLX | Cai--Liu--Xia maximum mean test (2014) | — (validation-blocked; no public callable) | `mean2.2014CLX` |
 | Thulin | Thulin random-subspace test (2014) | `mean.thulin_2samp` | `mean2.2014Thulin` |
-| LYL | Lee--You--Lin maximum pairwise Bayes factor | `mean.lyl_2samp` | `mean2.mxPBF` |
+| mxPBF / LYL | Lee--You--Lin maximum pairwise Bayes factor | `mean.maximum_pairwise_bayes_factor_2samp` | `mean2.mxPBF` |
 | Schott | Schott k-sample mean test (2007) | `mean.schott_ksamp` | `meank.2007Schott` |
 | ZX | Zhang--Xu (2009) | `mean.zx_ksamp` | `meank.2009ZX` |
 | CPH | Cao--Park--He (2019) | `mean.cph_ksamp` | `meank.2019CPH` |
@@ -50,14 +50,14 @@ pySHT does not expose them as callables.
 | WL | Wu--Li random-projection covariance tests (2015) | `covariance.wl_1samp`, `covariance.wl_2samp` | `cov1.2015WL`, `cov2.2015WL` |
 | LC | Li--Chen covariance test (2012) | `covariance.lc_2samp` | `cov2.2012LC` |
 | CLX | Cai--Liu--Xia covariance test (2013) | `covariance.clx_2samp` | `cov2.2013CLX` |
-| LYL | Lee--You--Lin maximum pairwise Bayes factor | `covariance.lyl_2samp` | `cov2.mxPBF` |
+| mxPBF / LYL | Lee--You--Lin maximum pairwise Bayes factor | `covariance.maximum_pairwise_bayes_factor_2samp` | `cov2.mxPBF` |
 | Schott 2001 | Schott Wald covariance test | `covariance.schott_2001_ksamp` | `covk.2001Schott` |
 | Schott 2007 | Schott high-dimensional covariance test | `covariance.schott_2007_ksamp` | `covk.2007Schott` |
-| AS | Arnold--Shavelle joint mean/variance test (1998) | `mean_variance.as_1samp` | `mvar1.1998AS`, `mvar1.LRT` |
+| LRT / AS | One-sample normal likelihood-ratio test; Arnold--Shavelle form (1998) | `mean_variance.lrt_1samp` | `mvar1.1998AS`, `mvar1.LRT` |
 | PN | Pearson--Neyman (1930) | `mean_variance.pn_2samp` | `mvar2.1930PN` |
 | PL | Perng--Littell (1976) | `mean_variance.pl_2samp` | `mvar2.1976PL` |
 | Muirhead | Muirhead (1982) | `mean_variance.muirhead_2samp` | `mvar2.1982Muirhead` |
-| ZXC | Zhang--Xu--Chen (2012) | `mean_variance.zxc_2samp` | `mvar2.2012ZXC` |
+| exact LRT / ZXC | Zhang--Xu--Chen exact likelihood-ratio test (2012) | `mean_variance.exact_lrt_2samp` | `mvar2.2012ZXC` |
 | LRT | Two-sample likelihood-ratio test | `mean_variance.lrt_2samp` | `mvar2.LRT` |
 | LLZS | Liu--Liu--Zheng--Shi (2017) | `mean_covariance.llzs_1samp` | `sim1.2017Liu` |
 | LRT | One-sample mean/covariance likelihood-ratio test | `mean_covariance.lrt_1samp` | `sim1.LRT` |
@@ -76,6 +76,35 @@ pySHT does not expose them as callables.
 | YM interpoint | Yang--Modarres interpoint test (2017) | `uniformity.ym_interpoint` | `unif.2017YMi` |
 | YM quantile | Yang--Modarres quantile test (2017) | `uniformity.ym_quantile` | `unif.2017YMq` |
 | simplex uniformity | Dirichlet likelihood-ratio test of uniformity | `simplex.uniformity` | `simplex.uniform` |
+
+## pySHT-native research methods
+
+These names have no SHT crosswalk. Expanded surnames and common search terms
+are indexing metadata, not callable aliases.
+
+| Token or search name | Expanded method | Canonical Python function |
+|---|---|---|
+| CQ | Chen--Qin dense high-dimensional mean test (2010) | `mean.cq_2samp` |
+| Li | Li fixed-small-sample, increasing-dimension Student tests (2023) | `mean.li_1samp`, `mean.li_2samp`, `mean.li_ksamp` |
+| CZZ | Chen--Zhang--Zhong covariance identity and sphericity tests (2010) | `covariance.czz_identity_1samp`, `covariance.czz_sphericity_1samp` |
+| DISCO / energy | Rizzo--Székely energy multi-sample equality test | `equaldist.energy_ksamp` |
+| MMD | Maximum mean discrepancy | `equaldist.mmd_2samp` |
+| Ball Divergence | Pan--Tian--Wang--Zhang distribution-equality test | — (validation-blocked; private research implementation) |
+| distance covariance / dCov | Székely--Rizzo--Bakirov independence test | `independence.distance_covariance` |
+| HSIC | Hilbert--Schmidt independence criterion | `independence.hsic` |
+| dHSIC | Joint Hilbert--Schmidt independence criterion | `independence.dhsic` |
+| distance multivariance | Böttcher--Keller-Ressel--Schilling mutual-independence test | `independence.distance_multivariance` |
+| HZ | Henze--Zirkler multivariate-normality test | `normality.henze_zirkler` |
+| energy normality | Székely--Rizzo multivariate-normality test | `normality.energy` |
+| EHY | Ebner--Henze--Yukich nearest-neighbor uniformity statistic | `uniformity.ehy`, `simplex.ehy_uniformity` |
+| alpha-energy | Sevinç--Tsagris compositional equality test | `simplex.alpha_energy_ksamp` |
+| Rayleigh | First-harmonic circular-uniformity test | `circular.rayleigh` |
+| Watson $U^2$ | Omnibus circular-uniformity test | `circular.watson` |
+| HR | Modified Hermans--Rasson Sobolev circular-uniformity test (1985) | `circular.hermans_rasson` |
+| MWW | Mardia--Watson--Wheeler circular multi-sample test | `circular.mardia_watson_wheeler_ksamp` |
+
+The [native-method catalog](native-methods.md) distinguishes public methods
+from research candidates that remain behind scientific gates.
 
 ## Collision rule
 

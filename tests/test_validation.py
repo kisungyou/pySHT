@@ -119,6 +119,24 @@ def test_square_and_covariance_matrix_validation() -> None:
         np.testing.assert_array_equal(
             validate_covariance_matrix(scaled, name="popcov", size=2), scaled
         )
+    heterogeneous = np.array([[1.0e-300, 0.5], [0.5, 1.0e300]])
+    np.testing.assert_array_equal(
+        validate_covariance_matrix(heterogeneous, name="popcov"), heterogeneous
+    )
+    permutation = np.array([1, 0])
+    permuted_heterogeneous = heterogeneous[np.ix_(permutation, permutation)]
+    np.testing.assert_array_equal(
+        validate_covariance_matrix(permuted_heterogeneous, name="popcov"),
+        permuted_heterogeneous,
+    )
+    np.testing.assert_array_equal(
+        validate_covariance_matrix(
+            heterogeneous,
+            name="popcov",
+            positive_definite=False,
+        ),
+        heterogeneous,
+    )
     with pytest.raises(ValueError, match="symmetric"):
         validate_square_matrix([[1.0, 2.0], [0.0, 1.0]], name="matrix")
     with pytest.raises(ValueError, match="shape"):
@@ -134,6 +152,11 @@ def test_square_and_covariance_matrix_validation() -> None:
     with pytest.raises(ValueError, match="symmetric"):
         validate_square_matrix(
             [[1.0e-300, 1.0e-300], [0.0, 1.0e-300]],
+            name="matrix",
+        )
+    with pytest.raises(ValueError, match="symmetric"):
+        validate_square_matrix(
+            [[1.0e300, 1.0], [0.0, 1.0]],
             name="matrix",
         )
     with pytest.raises(ValueError, match="positive definite"):
@@ -152,6 +175,12 @@ def test_square_and_covariance_matrix_validation() -> None:
     with pytest.raises(ValueError, match="positive semidefinite"):
         validate_covariance_matrix(
             [[1.0, 2.0], [2.0, 1.0]],
+            name="popcov",
+            positive_definite=False,
+        )
+    with pytest.raises(ValueError, match="positive semidefinite"):
+        validate_covariance_matrix(
+            [[0.0, np.nextafter(0.0, 1.0)], [np.nextafter(0.0, 1.0), 1.0]],
             name="popcov",
             positive_definite=False,
         )
@@ -193,3 +222,16 @@ def test_simplex_validation_requires_interior_and_unit_row_sums() -> None:
         validate_simplex_sample([[0.0, 0.5, 0.5], [0.2, 0.3, 0.5]])
     with pytest.raises(ValueError, match="sum to 1"):
         validate_simplex_sample([[0.2, 0.3, 0.6], [0.1, 0.6, 0.3]])
+
+
+def test_simplex_sum_tolerance_is_component_order_invariant() -> None:
+    first = np.array([0.7, 0.2, 0.1, 5.0e-13, 5.0e-13])
+    permuted = np.array([0.7, 0.2, 5.0e-13, 0.1, 5.0e-13])
+
+    # Ordinary reductions land on opposite sides of the 1e-12 acceptance
+    # boundary.  A component label permutation must not change the domain.
+    assert abs(float(np.sum(first)) - 1.0) <= 1.0e-12
+    assert abs(float(np.sum(permuted)) - 1.0) > 1.0e-12
+    for row in (first, permuted):
+        with pytest.raises(ValueError, match="sum to 1"):
+            validate_simplex_sample(np.vstack((row, row)))

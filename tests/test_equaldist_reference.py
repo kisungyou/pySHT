@@ -253,3 +253,71 @@ def test_raw_and_normalized_statistics_have_declared_scale_relation() -> None:
     )
     assert scaled.exceedances == result.exceedances
     assert scaled.pvalue == result.pvalue
+
+
+@pytest.mark.parametrize(
+    ("x_offsets", "y_offsets", "expected_exceedances"),
+    (
+        (
+            np.array([-15.0, -8.0, 1.0, -48.0]),
+            np.array([29.0, 18.0, -41.0, -27.0, 0.0]),
+            87,
+        ),
+        (
+            np.array([[-15.0, 2.0], [-8.0, -7.0], [1.0, 5.0], [-48.0, 11.0]]),
+            np.array(
+                [
+                    [29.0, -4.0],
+                    [18.0, 9.0],
+                    [-41.0, 8.0],
+                    [-27.0, -12.0],
+                    [0.0, 3.0],
+                ]
+            ),
+            74,
+        ),
+    ),
+)
+def test_huge_common_offset_preserves_exact_orbit_geometry(
+    x_offsets: NDArray[np.float64],
+    y_offsets: NDArray[np.float64],
+    expected_exceedances: int,
+) -> None:
+    """Retain ULP-scale geometry before applying numerical normalization."""
+    shift = 1e300
+    spacing = np.spacing(shift)
+    x = shift + spacing * x_offsets
+    y = shift + spacing * y_offsets
+
+    # Every intended displacement is exactly representable at this location.
+    np.testing.assert_array_equal((x - shift) / spacing, x_offsets)
+    np.testing.assert_array_equal((y - shift) / spacing, y_offsets)
+
+    total = math.comb(x.shape[0] + y.shape[0], x.shape[0])
+    reference = bg_2samp(
+        x_offsets,
+        y_offsets,
+        calibration="exact",
+        n_resamples=total,
+    )
+    translated = bg_2samp(
+        x,
+        y,
+        calibration="exact",
+        n_resamples=total,
+    )
+
+    assert reference.exceedances == expected_exceedances
+    assert translated.exceedances == expected_exceedances
+    assert translated.pvalue == reference.pvalue
+    assert translated.normalized_statistic == pytest.approx(
+        reference.normalized_statistic,
+        rel=5e-14,
+        abs=0.0,
+    )
+    assert translated.distance_scale == pytest.approx(
+        spacing * reference.distance_scale,
+        rel=5e-14,
+        abs=0.0,
+    )
+    assert math.isinf(translated.statistic)

@@ -26,8 +26,9 @@ or go directly to the [API reference](api/index.md).
 ::::
 
 ::::{div} home-status
-**Version 0.1.0.** This initial public release is correctness-gated and fully
-documented. The API may still evolve before version 1.0.
+**Development version 0.5.0.dev0.** Version 0.1.0 remains the latest released
+package. This tree integrates the validated 0.2--0.5 expansion waves; methods
+that did not pass their scientific release gate remain private or absent.
 ::::
 
 ## Contents
@@ -53,12 +54,17 @@ documented. The API may still evolve before version 1.0.
 - **[8] Normality** — [API](api/normality.md)
 - **[9] Rectangular Uniformity** — [API](api/uniformity.md)
 - **[10] Special Domains** — [API](api/simplex.md)
+- **[11] Independence** — [API](api/independence.md)
+- **[12] Circular Data** — [API](api/circular.md)
 
-The numbering and scientific organization follow SHT 0.1.9. The public pySHT
-API has 51 canonical functions covering 52 of its 54 statistical routine
-identities. The [migration crosswalk](migration/from-r.md) explains the one
-shared implementation, the validation-blocked mean CLX and Fisher identities,
-and the two R-only adapters.
+Categories `[0]`--`[10]` preserve SHT 0.1.9's numbering and scientific
+organization. The development API has 72 canonical functions: 51 SHT
+compatibility functions covering 52 of 54 statistical routine identities and
+21 independently cataloged pySHT-native methods. The
+[migration crosswalk](migration/from-r.md) explains the one shared
+implementation, the validation-blocked mean CLX and Fisher identities, and the
+two R-only adapters; the [native catalog](methods/native-methods.md) records
+the additional research methods and blocked candidates.
 
 ```{toctree}
 :hidden:

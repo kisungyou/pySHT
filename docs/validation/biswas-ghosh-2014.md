@@ -141,10 +141,19 @@ Directly subtracting coordinates near the extremes of float64 can overflow,
 while squaring very small distance contrasts can underflow. The implementation
 therefore performs calibration on a dimensionless distance matrix.
 
-First, all coordinates are divided by the largest absolute coordinate (unless
-all are zero). Euclidean distances are then evaluated, and all distances are
-divided by their largest value. Conceptually, if $d_{\max}$ is the largest
-pooled pairwise distance, calibration uses
+For each feature, the pooled coordinates are first centered at the
+overflow-safe midpoint
+
+$$
+c_j=\frac{\min_i z_{ij}}2+\frac{\max_i z_{ij}}2.
+$$
+
+The centered coordinates are divided by their largest absolute value (unless
+all are zero). Centering first is essential when observations differ by only
+a few representable units around a huge common location: scaling the raw
+coordinates first can round those differences away. Euclidean distances are
+then evaluated and divided by their largest value. Conceptually, if
+$d_{\max}$ is the largest pooled pairwise distance, calibration uses
 
 $$
 \widetilde d_{ij}=d_{ij}/d_{\max},
@@ -254,6 +263,7 @@ distance matrix under test.
 | Exhaustive SciPy oracle | The public exact result matches a fresh evaluation of the literal formula for every one of $\binom73=35$ labelings. |
 | Translation, rotation, feature permutation | Statistic and exhaustive upper-tail count respect Euclidean invariance. |
 | Common rescaling | Raw statistic has degree two while normalized inference and the p-value are invariant. |
+| Huge common location | Univariate and bivariate ULP-scale fixtures near $10^{300}$ reproduce the recentered geometry, raw-scale overflow, and every exact-orbit exceedance. |
 | Existing implementation tests | Row/group-order invariance, constant samples, extreme scales, input rejection, deterministic seeds, and Monte Carlo correction remain covered. |
 
 Reproduce the independent layer with:

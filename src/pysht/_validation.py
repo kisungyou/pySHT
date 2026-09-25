@@ -189,12 +189,24 @@ def validate_square_matrix(
     if size is not None and values.shape != (size, size):
         raise ValueError(f"{name} must have shape ({size}, {size})")
     if symmetric:
-        scale = float(np.max(np.abs(values))) if values.size else 0.0
-        tolerance = 1.0e-12 * scale
         with np.errstate(over="ignore", invalid="ignore"):
             asymmetry = np.abs(values - values.T)
+            tolerance = 1.0e-12 * np.maximum(np.abs(values), np.abs(values.T))
         if np.any(~np.isfinite(asymmetry)) or np.any(asymmetry > tolerance):
             raise ValueError(f"{name} must be symmetric")
+        # Downstream factorizations must not depend on which triangle an
+        # accepted, roundoff-level asymmetry happened to occupy.
+        upper = np.triu_indices(values.shape[0], k=1)
+        with np.errstate(over="ignore", invalid="ignore"):
+            midpoints = values[upper] + 0.5 * (
+                values[(upper[1], upper[0])] - values[upper]
+            )
+        if not np.all(np.isfinite(midpoints)):
+            raise ValueError(f"{name} must be symmetric")
+        if upper[0].size:
+            values = values.copy()
+            values[upper] = midpoints
+            values[(upper[1], upper[0])] = midpoints
     return values
 
 
@@ -207,16 +219,41 @@ def validate_covariance_matrix(
 ) -> NDArray[np.float64]:
     """Validate a symmetric covariance matrix and its definiteness."""
     values = validate_square_matrix(matrix, name=name, size=size, symmetric=True)
-    scale = float(np.max(np.abs(values)))
-    if scale == 0.0:
-        if positive_definite:
+    diagonal = np.diag(values)
+    if positive_definite:
+        if np.any(diagonal <= 0.0):
             raise ValueError(f"{name} must be positive definite")
-        return values
-    # Definiteness is invariant to multiplication by a positive scalar.
-    # Normalizing first prevents valid matrices near either float64 endpoint
-    # from underflowing or overflowing inside the eigensolver.
+        active = np.ones(values.shape[0], dtype=bool)
+    else:
+        if np.any(diagonal < 0.0):
+            raise ValueError(f"{name} must be positive semidefinite")
+        active = diagonal > 0.0
+        inactive = ~active
+        if np.any(values[inactive, :] != 0.0) or np.any(values[:, inactive] != 0.0):
+            raise ValueError(f"{name} must be positive semidefinite")
+        if not np.any(active):
+            return values
+
+    # Diagonal equilibration is a congruence transformation and therefore
+    # preserves definiteness.  Unlike division by one global maximum, it does
+    # not erase a valid small-variance coordinate when marginal units span the
+    # full float64 exponent range.
+    principal = values[np.ix_(active, active)]
+    scales = np.sqrt(np.diag(principal))
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        correlation = principal / scales[:, None]
+        correlation = correlation / scales[None, :]
+    if not np.all(np.isfinite(correlation)):
+        raise ValueError(f"{name} eigenvalues could not be evaluated")
+    upper = np.triu_indices(correlation.shape[0], k=1)
+    correlation_midpoints = correlation[upper] + 0.5 * (
+        correlation[(upper[1], upper[0])] - correlation[upper]
+    )
+    correlation[upper] = correlation_midpoints
+    correlation[(upper[1], upper[0])] = correlation_midpoints
+    np.fill_diagonal(correlation, 1.0)
     try:
-        eigenvalues = np.linalg.eigvalsh(values / scale)
+        eigenvalues = np.linalg.eigvalsh(correlation)
     except np.linalg.LinAlgError as exc:
         raise ValueError(f"{name} eigenvalues could not be evaluated") from exc
     if not np.all(np.isfinite(eigenvalues)):
@@ -268,7 +305,10 @@ def validate_simplex_sample(
             raise ValueError(f"{name} must lie strictly inside the probability simplex")
     elif np.any(values < 0.0):
         raise ValueError(f"{name} must contain non-negative components")
-    row_sums = np.sum(values, axis=1)
+    # Component labels are scientifically arbitrary.  A fixed magnitude order
+    # keeps acceptance at the tolerance boundary invariant to a common
+    # component permutation instead of exposing NumPy's reduction order.
+    row_sums = np.sum(np.sort(values, axis=1), axis=1, dtype=np.float64)
     if not np.allclose(row_sums, 1.0, rtol=0.0, atol=1e-12):
         raise ValueError(f"each row of {name} must sum to 1")
     return values

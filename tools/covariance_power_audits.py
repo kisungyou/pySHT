@@ -174,12 +174,16 @@ def _run_lyl_direction() -> dict[str, object]:
         alternative_second[:, 1] = (
             0.7 * latent[:, 0] + math.sqrt(1.0 - 0.7**2) * latent[:, 1]
         )
-        null_values[replication] = covariance.lyl_2samp(first, null_second).statistic
-        alternative_values[replication] = covariance.lyl_2samp(
-            first, alternative_second
+        null_values[replication] = covariance.maximum_pairwise_bayes_factor_2samp(
+            first, null_second
         ).statistic
+        alternative_values[replication] = (
+            covariance.maximum_pairwise_bayes_factor_2samp(
+                first, alternative_second
+            ).statistic
+        )
     return {
-        "method": "covariance.lyl_2samp",
+        "method": "covariance.maximum_pairwise_bayes_factor_2samp",
         "design": (
             "n1=n2=50,p=10; alternative second group has correlation 0.7 "
             "between coordinates 1 and 2"

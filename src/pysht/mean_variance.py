@@ -20,12 +20,12 @@ from ._results import HypothesisTestResult
 from ._validation import validate_1d_sample, validate_real_scalar
 
 __all__ = [
-    "as_1samp",
+    "exact_lrt_2samp",
+    "lrt_1samp",
     "lrt_2samp",
     "muirhead_2samp",
     "pl_2samp",
     "pn_2samp",
-    "zxc_2samp",
 ]
 
 _CHI_SQUARED_2 = "asymptotic chi-square distribution with 2 degrees of freedom"
@@ -264,7 +264,7 @@ def _likelihood_ratio(log_lambda: float) -> float:
     return math.exp(log_lambda)
 
 
-def as_1samp(
+def lrt_1samp(
     x: ArrayLike,
     *,
     popmean: float = 0.0,
@@ -399,7 +399,8 @@ def pn_2samp(x: ArrayLike, y: ArrayLike) -> HypothesisTestResult:
         raise ArithmeticError("the Pearson-Neyman beta shapes are invalid")
 
     likelihood_ratio = _likelihood_ratio(summary.log_lambda)
-    pvalue = float(stats.beta.cdf(likelihood_ratio, shape1, shape2))
+    log_pvalue = _log_beta_lower(summary.log_lambda, shape1, shape2)
+    pvalue = 0.0 if log_pvalue < _LOG_SMALLEST else math.exp(log_pvalue)
     return HypothesisTestResult(
         statistic=likelihood_ratio,
         pvalue=pvalue,
@@ -680,7 +681,7 @@ def _exact_lrt_pvalue(log_lambda: float, n: int, m: int) -> float:
     return min(1.0, math.exp(log_pvalue))
 
 
-def zxc_2samp(x: ArrayLike, y: ArrayLike) -> HypothesisTestResult:
+def exact_lrt_2samp(x: ArrayLike, y: ArrayLike) -> HypothesisTestResult:
     """Perform the exact Zhang--Xu--Chen two-sample normal test.
 
     The likelihood ratio itself is reported.  Its exact p-value is the lower

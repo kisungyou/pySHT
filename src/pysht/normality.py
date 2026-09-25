@@ -14,13 +14,15 @@ from typing import Final, Literal
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
-from scipy import stats
+from scipy import special, stats
+from scipy.spatial import distance
 
-from ._resampling import monte_carlo_calibration
+from ._resampling import monte_carlo_calibration, upper_tail_threshold
 from ._results import HypothesisTestResult, ResamplingTestResult
 from ._validation import (
     make_generator,
     validate_1d_sample,
+    validate_2d_sample,
     validate_choice,
     validate_positive_integer,
     validate_real_scalar,
@@ -28,6 +30,8 @@ from ._validation import (
 
 __all__ = [
     "adjusted_jarque_bera",
+    "energy",
+    "henze_zirkler",
     "jarque_bera",
     "robust_jarque_bera",
     "shapiro_francia",
@@ -40,6 +44,9 @@ type _RowStatistic = Callable[[NDArray[np.float64]], NDArray[np.float64]]
 
 _NORMALITY_ALTERNATIVE: Final = "the distribution is not normal"
 _MONTE_CARLO_BATCH_VALUES: Final = 1_000_000
+_MULTIVARIATE_NORMALITY_ALTERNATIVE: Final = (
+    "the multivariate distribution is not normal"
+)
 
 
 def _validate_calibration(value: str) -> _Calibration:
@@ -257,6 +264,244 @@ def _moment_test_result(
         exceedances=exceedances,
         monte_carlo_standard_error=standard_error,
         tail_probability_interval=interval,
+    )
+
+
+def _standardized_multivariate_sample(
+    x: ArrayLike,
+) -> tuple[NDArray[np.float64], int, int]:
+    """Return full-rank affine-standardized residuals using a stable SVD.
+
+    If ``X_c = U D V'`` and the empirical covariance uses denominator ``n``,
+    then ``sqrt(n) U`` has the same row Gram matrix as ``X_c S_n^-1/2``.
+    Both new statistics depend only on that Gram matrix.  This representation
+    avoids explicitly forming or inverting a potentially ill-scaled covariance
+    matrix while retaining affine invariance.
+    """
+    values = validate_2d_sample(x, name="x", minimum_rows=3)
+    n, dimension = values.shape
+    if dimension < 2:
+        raise ValueError("x must contain at least two features")
+    if n <= dimension:
+        raise ValueError(
+            "multivariate normality testing requires more observations than features"
+        )
+
+    anchor = np.min(values, axis=0)
+    with np.errstate(over="ignore", invalid="ignore"):
+        shifted = values - anchor
+    overflowing_columns = ~np.all(np.isfinite(shifted), axis=0)
+    if np.any(overflowing_columns):
+        scales = np.max(np.abs(values[:, overflowing_columns]), axis=0)
+        shifted[:, overflowing_columns] = (
+            values[:, overflowing_columns] / scales
+            - anchor[overflowing_columns] / scales
+        )
+    column_scales = np.max(np.abs(shifted), axis=0)
+    column_scales[column_scales == 0.0] = 1.0
+    scaled = shifted / column_scales
+    centered = scaled - np.mean(scaled, axis=0, dtype=np.float64)
+    try:
+        left_vectors, singular_values, _ = np.linalg.svd(centered, full_matrices=False)
+    except np.linalg.LinAlgError as exc:
+        raise ValueError("the centered sample rank could not be evaluated") from exc
+    if singular_values.size != dimension or singular_values[0] == 0.0:
+        raise ValueError("the centered sample covariance must be positive definite")
+    tolerance = (
+        max(centered.shape) * np.finfo(np.float64).eps * float(singular_values[0])
+    )
+    if singular_values[-1] <= tolerance:
+        raise ValueError("the centered sample covariance must be positive definite")
+    standardized = math.sqrt(n) * left_vectors[:, :dimension]
+    if n == dimension + 1:
+        # The residual space is the whole orthogonal complement of the
+        # constant vector: Y Y' = n I - 11'. Use a fixed Helmert basis after
+        # checking rank, so the statistic also respects this exact degeneracy.
+        standardized = np.zeros((n, dimension), dtype=np.float64)
+        for column in range(dimension):
+            value = math.sqrt(n / ((column + 1) * (column + 2)))
+            standardized[: column + 1, column] = value
+            standardized[column + 1, column] = -(column + 1) * value
+    return np.asarray(standardized, dtype=np.float64, order="C"), n, dimension
+
+
+def _henze_zirkler_statistic(
+    standardized: NDArray[np.float64], *, beta: float
+) -> float:
+    n, dimension = standardized.shape
+    squared_norms = np.einsum("ij,ij->i", standardized, standardized)
+    squared_distances = distance.squareform(
+        distance.pdist(standardized, metric="sqeuclidean")
+    )
+    beta_squared = beta * beta
+    pair_term = float(
+        np.mean(np.exp(-0.5 * beta_squared * squared_distances), dtype=np.float64)
+    )
+    residual_term = float(
+        np.mean(
+            np.exp(-beta_squared * squared_norms / (2.0 * (1.0 + beta_squared))),
+            dtype=np.float64,
+        )
+    )
+    statistic = n * (
+        pair_term
+        - 2.0 * (1.0 + beta_squared) ** (-0.5 * dimension) * residual_term
+        + (1.0 + 2.0 * beta_squared) ** (-0.5 * dimension)
+    )
+    roundoff = 128.0 * np.finfo(np.float64).eps * n
+    if statistic < -roundoff:
+        raise ArithmeticError("the Henze-Zirkler statistic became negative")
+    return max(0.0, float(statistic))
+
+
+def _energy_normality_statistic(standardized: NDArray[np.float64]) -> float:
+    n, dimension = standardized.shape
+    log_gamma_ratio = float(
+        special.gammaln((dimension + 1.0) / 2.0) - special.gammaln(dimension / 2.0)
+    )
+    gamma_ratio = math.exp(log_gamma_ratio)
+    squared_norms = np.einsum("ij,ij->i", standardized, standardized)
+    expected_to_normal = (
+        math.sqrt(2.0)
+        * gamma_ratio
+        * special.hyp1f1(-0.5, dimension / 2.0, -0.5 * squared_norms)
+    )
+    if not np.all(np.isfinite(expected_to_normal)):
+        raise ArithmeticError("the energy-to-normal expectation is not finite")
+    pair_distance_sum = 2.0 * float(
+        np.sum(distance.pdist(standardized), dtype=np.float64)
+    )
+    statistic = n * (
+        2.0 * float(np.mean(expected_to_normal, dtype=np.float64))
+        - 2.0 * gamma_ratio
+        - pair_distance_sum / (n * n)
+    )
+    roundoff = 256.0 * np.finfo(np.float64).eps * n * max(1.0, gamma_ratio)
+    if statistic < -roundoff:
+        raise ArithmeticError("the energy normality statistic became negative")
+    return max(0.0, float(statistic))
+
+
+def _multivariate_normal_monte_carlo(
+    *,
+    observed: float,
+    sample_size: int,
+    dimension: int,
+    statistic: Callable[[NDArray[np.float64]], float],
+    statistic_name: str,
+    method: str,
+    n_resamples: object,
+    rng: int | np.integer | np.random.Generator | None,
+) -> ResamplingTestResult:
+    resamples = validate_positive_integer(n_resamples, name="n_resamples")
+    generator = make_generator(rng)
+    exceedances = 0
+    degenerate = sample_size == dimension + 1
+    threshold = upper_tail_threshold(observed)
+    for _ in range(resamples):
+        simulated = generator.standard_normal((sample_size, dimension))
+        if degenerate:
+            # Every full-rank sample has the same fitted geometry. Count
+            # mathematical ties directly; ranking SVD roundoff here can
+            # falsely reject normality. Keep the documented RNG consumption.
+            exceedances += 1
+        else:
+            standardized, _, _ = _standardized_multivariate_sample(simulated)
+            exceedances += int(statistic(standardized) >= threshold)
+    pvalue, standard_error, interval = monte_carlo_calibration(exceedances, resamples)
+    return ResamplingTestResult(
+        statistic=observed,
+        pvalue=pvalue,
+        method=method,
+        alternative=_MULTIVARIATE_NORMALITY_ALTERNATIVE,
+        data_name="x",
+        statistic_name=statistic_name,
+        calibration="Monte Carlo normal-null calibration with parameter refitting",
+        n_resamples=resamples,
+        exceedances=exceedances,
+        monte_carlo_standard_error=standard_error,
+        tail_probability_interval=interval,
+        diagnostics=(
+            ("dimension", dimension),
+            ("degenerate affine geometry", degenerate),
+        ),
+    )
+
+
+def henze_zirkler(
+    x: ArrayLike,
+    *,
+    calibration: str = "monte-carlo",
+    n_resamples: int = 9_999,
+    rng: int | np.integer | np.random.Generator | None = None,
+) -> ResamplingTestResult:
+    """Perform the Henze--Zirkler test of multivariate normality (1990).
+
+    The smoothing parameter is
+    ``beta = ((2 p + 1) n / 4)**(1 / (p + 4)) / sqrt(2)``.  The sample is
+    centered and whitened with the maximum-likelihood empirical covariance.
+    Every Monte Carlo null sample is independently re-centered and re-whitened;
+    treating the estimated parameters as known would calibrate a different
+    hypothesis.
+
+    With exactly ``n = p + 1`` observations the fitted geometry is constant:
+    every null statistic ties, and the p-value is 1. This boundary case has
+    no power against nonnormal alternatives and is flagged in diagnostics.
+    """
+    validate_choice(calibration, name="calibration", choices=("monte-carlo",))
+    standardized, n, dimension = _standardized_multivariate_sample(x)
+    beta = (n * (2.0 * dimension + 1.0) / 4.0) ** (1.0 / (dimension + 4.0)) / math.sqrt(
+        2.0
+    )
+    observed = _henze_zirkler_statistic(standardized, beta=beta)
+    return _multivariate_normal_monte_carlo(
+        observed=observed,
+        sample_size=n,
+        dimension=dimension,
+        statistic=lambda values: _henze_zirkler_statistic(values, beta=beta),
+        statistic_name="HZ",
+        method="Henze-Zirkler test of multivariate normality (1990)",
+        n_resamples=n_resamples,
+        rng=rng,
+    )
+
+
+def energy(
+    x: ArrayLike,
+    *,
+    calibration: str = "monte-carlo",
+    n_resamples: int = 9_999,
+    rng: int | np.integer | np.random.Generator | None = None,
+) -> ResamplingTestResult:
+    """Perform the energy test of multivariate normality (2005).
+
+    The statistic compares the empirical distribution of affine-standardized
+    residuals with the standard multivariate normal distribution.  Its two
+    population expectation terms are evaluated analytically; calibration
+    simulates and refits the complete composite-null procedure.
+
+    With exactly ``n = p + 1`` observations the fitted geometry is constant:
+    every null statistic ties, and the p-value is 1. This boundary case has
+    no power against nonnormal alternatives and is flagged in diagnostics.
+    """
+    validate_choice(calibration, name="calibration", choices=("monte-carlo",))
+    standardized, n, dimension = _standardized_multivariate_sample(x)
+    # Székely--Rizzo use the usual sample covariance (denominator n - 1),
+    # unlike the maximum-likelihood covariance used by HZ.  The SVD helper
+    # returns population-covariance residuals, so apply the exact finite-sample
+    # conversion here and in every parametric-null replicate.
+    energy_scale = math.sqrt((n - 1.0) / n)
+    energy_residuals = energy_scale * standardized
+    observed = _energy_normality_statistic(energy_residuals)
+    return _multivariate_normal_monte_carlo(
+        observed=observed,
+        sample_size=n,
+        dimension=dimension,
+        statistic=lambda values: _energy_normality_statistic(energy_scale * values),
+        statistic_name="E",
+        method="Energy test of multivariate normality (Székely-Rizzo, 2005)",
+        n_resamples=n_resamples,
+        rng=rng,
     )
 
 

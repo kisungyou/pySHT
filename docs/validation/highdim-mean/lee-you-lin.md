@@ -3,7 +3,7 @@
 **Status:** Equation (4), log-domain, translation, scaling, group-exchange,
 large-magnitude, and degenerate-feature gates pass.
 
-For each feature, `lyl_2samp` uses the ordinary centered maximum-likelihood
+For each feature, `maximum_pairwise_bayes_factor_2samp` uses the ordinary centered maximum-likelihood
 variances from Equation (4). The published model is Gaussian with a common
 covariance matrix under the two samples. At `a0=b0=0`, its component log
 Bayes factor is
@@ -36,13 +36,14 @@ invariance at large common locations without changing the log Bayes factors.
 
 ## Targeted alternative-evidence gate
 
-Because `lyl_2samp` returns a Bayes factor rather than a p-value, this gate
+Because `maximum_pairwise_bayes_factor_2samp` returns a Bayes factor rather than a p-value, this gate
 does not invent a rejection cutoff. Seed 2026090322 initializes a
 `SeedSequence`; child 0 drives one persistent PCG64 data stream and child 1 is
 reserved as an independent auxiliary stream. In each of 1,000 replications,
 child 0 draws `x` and then `y` as independent 30-by-60 standard-normal
-matrices. The matched null value is `mean.lyl_2samp(x, y).statistic`; the
-alternative value is `mean.lyl_2samp(x, y + shift).statistic`, where `shift`
+matrices. The matched null value is
+`mean.maximum_pairwise_bayes_factor_2samp(x, y).statistic`; the alternative
+value is `mean.maximum_pairwise_bayes_factor_2samp(x, y + shift).statistic`, where `shift`
 equals 1.0 in the first three coordinates and zero elsewhere. The same
 realized `(x,y)` is used in each matched pair, and the default published
 `gamma` rate is retained.
@@ -54,7 +55,8 @@ realized `(x,y)` is used in each matched pair, and the default published
 The paired ordering and median displacement establish directional evidence
 under this sparse strong alternative; neither number is proposed as a
 universal evidence threshold. The audit is reproduced by
-`python -m tools.mean_power_audits mean.lyl_2samp` under Python 3.12.13,
+`python -m tools.mean_power_audits mean.maximum_pairwise_bayes_factor_2samp`
+under Python 3.12.13,
 NumPy 2.5.1, and SciPy 1.18.0.
 
 Primary reference: K. Lee, K. You, and L. Lin, *Bayesian Optimal Two-Sample

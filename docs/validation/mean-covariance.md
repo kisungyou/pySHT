@@ -13,6 +13,7 @@ are the scientific gates.
 | `llzs_1samp` | Liu, Liu, Zheng, and Shi (2017), Section 2, pp. 84--87 | Literal raw-second-moment formula and high-dimensional null simulations | Public; legacy centering and tail corrected |
 | `lrt_1samp` | Multivariate normal likelihood and Wilks' fixed-dimension limit | Original-coordinate solve and log-determinant identity | Public; fixed-dimensional asymptotic calibration |
 | `hn_2samp` | Hyodo and Nishiyama (2018), Sections 2.1--2.2; equations (2.1)--(2.2) in the open technical report | Literal trace-estimator transcription and high-dimensional null simulations | Public |
+| `ylxl_2samp` | Yu, Li, Xue, and Li (2023), proposed Fisher combination with power enhancement | Not available: primary-equation branch audit incomplete | Blocked; no callable |
 
 ## Stable null whitening
 
@@ -66,8 +67,12 @@ not scientific parameter estimates returned by the procedure.
 When $p>n$, the implementation evaluates
 $\operatorname{tr}(M_n^2)$ through the $n$-by-$n$ observation Gram matrix.
 It therefore does not allocate a $p$-by-$p$ matrix in the regime for which the
-method was designed. A separate fixture compares this route with the literal
-feature-space formula.
+method was designed, and the default identity null remains implicit rather
+than being constructed and factored. A separate fixture compares this route
+with the literal feature-space formula; a 5,000-feature allocation guard
+covers the default-null path. Its time is $O(n^2p)$ and storage is
+$O(np+n^2)$ when $p>n$. Supplying a general `popcov` necessarily adds a dense
+$O(p^3+np^2)$ whitening step and $O(p^2)$ storage.
 
 SHT 0.1.9 replaced $M_n$ with the covariance matrix centered at the sample
 mean while retaining the null center derived for $M_n$. When $p/n\to y>0$,
@@ -98,10 +103,16 @@ $$
 $$
 
 The implementation requires $n>p$ and a positive-definite fitted covariance;
-it never substitutes a pseudoinverse. Eigenvalue contributions are evaluated
-as $\lambda-1-\log1p(\lambda-1)$ to preserve accuracy near the null. The
-fixed-data oracle computes the same likelihood directly in the original
-coordinates with solves and determinant ratios.
+it never substitutes a pseudoinverse. Eigenvalue log terms use `log1p` near
+one and `log` in the far lower tail, preserving both local accuracy and tiny
+positive eigenvalues. The fixed-data oracle computes the same likelihood
+directly in the original coordinates with solves and determinant ratios.
+
+If heterogeneous column units make the direct covariance overflow or
+underflow, a fallback normalizes each column before checking rank. It restores
+$\operatorname{tr}(S_n)+\|\bar Z\|^2$ and $\log|S_n|$ analytically, so a
+full-rank design spanning hundreds of decimal orders is not mistaken for a
+singular one. An independent log-determinant fixture covers this path.
 
 This is a multivariate-normal, fixed-dimension limit. It is not a fallback for
 a singular or proportional high-dimensional design.
@@ -266,6 +277,21 @@ Targeted alternatives used 2,000 replications and integer seed 20260902, with
 Run `python -m tools.covariance_power_audits` to reproduce these counts. This
 is targeted power evidence for the advertised regimes, not a claim that the
 same power holds for smaller samples or arbitrary alternatives.
+
+## Yu--Li--Xue--Li status: blocked
+
+`ylxl_2samp` is not present in `pysht.mean_covariance` and is not listed in
+`__all__`. The approved scope permits only the paper-default Fisher
+combination with power enhancement; it does not permit an unvalidated simpler
+combination or threshold substitution. The primary-equation audit has not yet
+resolved every default component, dependence condition, and power-enhancement
+threshold into a literal independent implementation. There are therefore no
+two fixed fixtures, named-seed 20,000-null gate, or 2,000-run targeted
+alternative audit. The method remains absent rather than exposing a
+`NotImplementedError` placeholder. Its component-level time and storage
+complexities are likewise not certified until the exact paper-default branch
+and power-enhancement threshold have been transcribed. Primary source: [Yu, Li, Xue, and Li
+(2023)](https://doi.org/10.1080/01621459.2022.2061354).
 
 ## Migration mapping
 

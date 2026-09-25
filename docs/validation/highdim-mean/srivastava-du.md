@@ -11,7 +11,17 @@ variance. The two-sample form assumes a common covariance matrix.
 The independent ledger recomputes the diagonal quadratic form, finite-sample
 centering, `tr(R²)` correction, and standard-normal tail without using pySHT
 helpers. It also checks invariance to separate positive feature rescalings and
-to exchanging the two groups.
+to exchanging the two groups. Each feature is normalized separately before
+its variance and correlation entries are formed. A regression spanning column
+scales from approximately $10^{-300}$ through $10^{300}$ confirms that a
+valid small-scale feature is not rounded to zero because another column uses
+much larger units.
+
+The diagonal is accumulated columnwise and `tr(R²)` is evaluated through the
+smaller centered, standardized row or feature Gram. Thus the high-dimensional
+path does not construct a dense $p\times p$ covariance or correlation matrix,
+and the tall low-dimensional path does not construct a dense row Gram. A
+5,000-feature allocation guard verifies the former storage contract.
 
 Null vectors are removed before scaling and two groups use one deterministic
 feature-wise anchor. Regressions at common locations `1e8` and `1e14` compare

@@ -13,13 +13,21 @@ asymptotic and is intended for increasing sample size and dimension.
 - Literal implementations independently reproduce both statistics and
   p-values.
 - The legacy one-sample denominator cancelled an `n + 1` term where the
-  squared-covariance correction requires `n + 2`. pySHT uses
-  `2 n (n + 1) / ((n - 1)(n + 2))`.
+  squared-covariance correction requires `n + 2`. Writing $\nu$ for the
+  within-group covariance degrees of freedom, pySHT multiplies
+  $\operatorname{tr}(S^2)-\operatorname{tr}(S)^2/\nu$ by
+  $2\nu(\nu+1)/[(\nu-1)(\nu+2)]$. Thus a one-sample dataset with sample size
+  $n$ uses $2(n-1)n/[(n-2)(n+1)]$.
 - Common scaling and orthogonal feature transformations leave the result
   unchanged; exchanging the two samples leaves `bs_2samp` unchanged.
 - Null centering and shared two-sample anchoring precede numerical scaling;
   large-location regressions include `1e8` and `1e14`.
 - A nonpositive trace-variance estimate is rejected rather than clipped.
+- Covariance traces are evaluated from whichever exact row- or feature-Gram
+  identity has the lower product cost, including the cross-group pooled
+  correction. The high-dimensional paths therefore avoid dense $p\times p$
+  covariance storage, while tall low-dimensional inputs avoid quadratic row
+  storage; a 5,000-feature allocation guard covers the former property.
 
 ## Null calibration gate
 

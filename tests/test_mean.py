@@ -96,6 +96,38 @@ class TestUnivariateMeanTests(unittest.TestCase):
         np.testing.assert_allclose(scaled.pvalue, baseline.pvalue)
         self.assertTrue(np.isfinite(scaled.estimates[0][1]))
 
+    def test_extreme_confidence_intervals_retain_upper_tail_quantiles(self) -> None:
+        level = np.nextafter(1.0, 0.0)
+        alpha = 1.0 - level
+        estimate = float(np.mean(self.x))
+        standard_error = float(stats.sem(self.x))
+        df = self.x.size - 1
+
+        two_sided = ttest_1samp(self.x, confidence_level=level)
+        greater = ttest_1samp(
+            self.x,
+            alternative="greater",
+            confidence_level=level,
+        )
+        assert two_sided.confidence_interval is not None
+        assert greater.confidence_interval is not None
+        expected_two_sided_lower = (
+            estimate - float(stats.t.isf(alpha / 2.0, df)) * standard_error
+        )
+        expected_greater_lower = (
+            estimate - float(stats.t.isf(alpha, df)) * standard_error
+        )
+
+        np.testing.assert_allclose(
+            two_sided.confidence_interval[0], expected_two_sided_lower, rtol=2e-15
+        )
+        np.testing.assert_allclose(
+            greater.confidence_interval[0], expected_greater_lower, rtol=2e-15
+        )
+        self.assertTrue(np.isfinite(two_sided.confidence_interval[0]))
+        self.assertTrue(np.isfinite(two_sided.confidence_interval[1]))
+        self.assertTrue(np.isfinite(greater.confidence_interval[0]))
+
     def test_anova_matches_scipy_and_is_scale_invariant(self) -> None:
         groups = (
             np.array([1.0, 1.4, 0.7, 1.8]),

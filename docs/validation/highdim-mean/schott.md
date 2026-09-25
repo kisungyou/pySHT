@@ -23,6 +23,13 @@ anchor. This preserves the raw statistic's squared measurement units while
 avoiding location-driven cancellation; regressions cover common locations
 through `1e14`.
 
+The error trace and squared trace are evaluated from the smaller centered row
+or feature Gram, while the hypothesis trace is a weighted sum of squared mean
+contrasts. The high-dimensional implementation therefore does not allocate
+either MANOVA $p\times p$ sum-of-products matrix, and a tall low-dimensional
+input avoids a quadratic row Gram. A 5,000-feature regression guards the
+high-dimensional storage property.
+
 ## Null calibration gate
 
 The advertised Gaussian scenario has three independent groups of 20 rows,

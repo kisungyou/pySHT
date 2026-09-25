@@ -23,10 +23,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
@@ -44,10 +44,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
@@ -69,10 +69,10 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -80,7 +80,8 @@ jobs:
         run: python -m pip install -e ".[test]"
       - name: Run tests with branch coverage
         run: >-
-          python -m pytest -W error --cov=pysht --cov-report=term-missing
+          python -m pytest -W error --cov=pysht --cov-branch
+          --cov-report=term-missing
           --cov-fail-under=90
 
   docs:
@@ -88,31 +89,47 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
       - name: Install package and documentation dependencies
         run: python -m pip install -e ".[docs]"
       - name: Build documentation with warnings as errors
-        run: sphinx-build -W --keep-going -b html docs docs/_build/html
+        run: sphinx-build -E -a -W --keep-going -b html docs docs/_build/html
 
   package:
-    name: Build distributions (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: Build distributions (${{ matrix.platform.name }})
+    runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        platform:
+          - name: Linux x86-64
+            slug: linux-x86_64
+            runner: ubuntu-24.04
+            arch: x86_64
+          - name: macOS Apple Silicon
+            slug: macos-arm64
+            runner: macos-15
+            arch: arm64
+          - name: macOS Intel
+            slug: macos-x86_64
+            runner: macos-15-intel
+            arch: x86_64
+          - name: Windows AMD64
+            slug: windows-amd64
+            runner: windows-2022
+            arch: AMD64
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
@@ -126,43 +143,53 @@ jobs:
       - name: Build stable-ABI wheel
         run: python -m cibuildwheel --output-dir dist
         env:
+          CIBW_ARCHS: ${{ matrix.platform.arch }}
           CIBW_BUILD: "cp312-*"
-          CIBW_ARCHS_LINUX: "x86_64"
-          CIBW_ARCHS_MACOS: "arm64"
-          CIBW_ARCHS_WINDOWS: "AMD64"
           CIBW_ENVIRONMENT_MACOS: "MACOSX_DEPLOYMENT_TARGET=11.0"
           CIBW_SKIP: "*-musllinux_*"
       - name: Check distribution metadata
         shell: bash
         run: python -m twine check --strict dist/*
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: distributions-${{ matrix.os }}
+          name: distributions-${{ matrix.platform.slug }}
           path: dist/*
           if-no-files-found: error
           retention-days: 7
 
   wheel-smoke:
-    name: Wheel smoke (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    name: Wheel smoke (${{ matrix.platform.name }}, Python ${{ matrix.python-version }})
     needs: package
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        platform:
+          - name: Linux x86-64
+            slug: linux-x86_64
+            runner: ubuntu-24.04
+          - name: macOS Apple Silicon
+            slug: macos-arm64
+            runner: macos-15
+          - name: macOS Intel
+            slug: macos-x86_64
+            runner: macos-15-intel
+          - name: Windows AMD64
+            slug: windows-amd64
+            runner: windows-2022
         python-version: ["3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: distributions-${{ matrix.os }}
+          name: distributions-${{ matrix.platform.slug }}
           path: wheelhouse
       - name: Install runtime dependencies
         run: python -m pip install "numpy>=2.1" "scipy>=1.15"

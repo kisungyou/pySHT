@@ -29,8 +29,10 @@ from ._validation import (
 
 __all__ = [
     "clx_2samp",
+    "czz_identity_1samp",
+    "czz_sphericity_1samp",
     "lc_2samp",
-    "lyl_2samp",
+    "maximum_pairwise_bayes_factor_2samp",
     "schott_2001_ksamp",
     "schott_2007_ksamp",
     "wl_1samp",
@@ -119,26 +121,35 @@ def _whiten_against_null(
     values: NDArray[np.float64], popcov: ArrayLike | None
 ) -> NDArray[np.float64]:
     feature_count = values.shape[1]
-    covariance = (
-        np.eye(feature_count, dtype=np.float64)
-        if popcov is None
-        else validate_covariance_matrix(
-            popcov, name="popcov", size=feature_count, positive_definite=True
-        )
+    if popcov is None:
+        (centered,), data_scale = _center_together(values)
+        with np.errstate(over="ignore", invalid="ignore"):
+            whitened = centered * data_scale
+        if not np.all(np.isfinite(whitened)):
+            raise ValueError("whitening could not be evaluated in float64")
+        return np.asarray(whitened, dtype=np.float64, order="C")
+    covariance = validate_covariance_matrix(
+        popcov, name="popcov", size=feature_count, positive_definite=True
     )
-    covariance_scale = float(np.max(np.abs(covariance)))
-    if covariance_scale <= 0.0:
+    # Diagonal equilibration preserves covariance matrices whose legitimate
+    # coordinate units span more than the entire float64 exponent range.  A
+    # single global divisor would underflow their smallest diagonal to zero.
+    diagonal_scale = np.sqrt(np.diag(covariance))
+    if np.any(diagonal_scale <= 0.0) or not np.all(np.isfinite(diagonal_scale)):
         raise ValueError("popcov must be positive definite")
-    normalized_covariance = covariance / covariance_scale
+    normalized_covariance = covariance / diagonal_scale[:, None]
+    normalized_covariance /= diagonal_scale[None, :]
+    normalized_covariance = 0.5 * (normalized_covariance + normalized_covariance.T)
     try:
         root = np.linalg.cholesky(normalized_covariance)
     except np.linalg.LinAlgError as exc:
         raise ValueError("popcov must be numerically positive definite") from exc
 
     (centered,), data_scale = _center_together(values)
-    multiplier = data_scale / math.sqrt(covariance_scale)
     with np.errstate(over="ignore", invalid="ignore"):
-        whitened = np.linalg.solve(root, centered.T).T * multiplier
+        standardized_units = centered / diagonal_scale
+        standardized_units *= data_scale
+        whitened = np.linalg.solve(root, standardized_units.T).T
     if not np.all(np.isfinite(whitened)):
         raise ValueError("whitening could not be evaluated in float64")
     return np.asarray(whitened, dtype=np.float64, order="C")
@@ -312,6 +323,147 @@ def _fisher_1samp(
     )
 
 
+def _czz_trace_estimators(
+    centered: NDArray[np.float64],
+) -> tuple[float, float]:
+    """Return CZZ's unbiased estimators of ``tr(Sigma)`` and ``tr(Sigma**2)``."""
+    trace = float(np.sum(centered * centered, dtype=np.float64)) / (
+        centered.shape[0] - 1
+    )
+    if not math.isfinite(trace) or trace <= 0.0:
+        raise ValueError("the covariance trace must be finite and positive")
+    trace_square = _lc_a_unbiased(centered)
+    if not math.isfinite(trace_square):
+        raise ValueError("the squared-covariance trace estimate must be finite")
+    return trace, trace_square
+
+
+def _signed_power_sum(
+    terms: tuple[tuple[float, float], ...],
+) -> float:
+    """Return ``sum(coefficient * exp(log_scale))`` without range loss."""
+    nonzero = tuple(
+        (coefficient, log_scale)
+        for coefficient, log_scale in terms
+        if coefficient != 0.0
+    )
+    if not nonzero:
+        return 0.0
+    largest = max(
+        math.log(abs(coefficient)) + log_scale for coefficient, log_scale in nonzero
+    )
+    scaled = math.fsum(
+        math.copysign(
+            math.exp(math.log(abs(coefficient)) + log_scale - largest),
+            coefficient,
+        )
+        for coefficient, log_scale in nonzero
+    )
+    if scaled == 0.0:
+        return 0.0
+    log_magnitude = largest + math.log(abs(scaled))
+    if log_magnitude > math.log(float(np.finfo(np.float64).max)):
+        return math.copysign(math.inf, scaled)
+    if log_magnitude < math.log(float(np.nextafter(0.0, 1.0))):
+        return math.copysign(0.0, scaled)
+    return math.copysign(math.exp(log_magnitude), scaled)
+
+
+def czz_identity_1samp(
+    x: ArrayLike, *, popcov: ArrayLike | None = None
+) -> HypothesisTestResult:
+    """Perform the Chen--Zhang--Zhong high-dimensional identity test.
+
+    A supplied positive-definite ``popcov`` is whitened to the identity before
+    evaluating Equations (2.3) and (2.2) of Chen, Zhang, and Zhong (2010).
+    The order-four unbiased trace estimator requires at least four rows.
+    """
+    values = validate_2d_sample(x, name="x", minimum_rows=4)
+    if values.shape[1] < 2:
+        raise ValueError("czz_identity_1samp requires at least two features")
+    if popcov is None:
+        # V_n is not scale invariant: retain the data scale analytically
+        # instead of restoring it before the fourth-order trace calculation.
+        # This keeps every finite scalar alternative evaluable, including
+        # scales whose squared or fourth powers leave float64 range.
+        (whitened,), whitening_scale = _center_together(values)
+    else:
+        whitened_in_units = _whiten_against_null(values, popcov)
+        whitening_scale = float(np.max(np.abs(whitened_in_units)))
+        if whitening_scale <= 0.0 or not math.isfinite(whitening_scale):
+            raise ValueError("the covariance trace must be finite and positive")
+        whitened = whitened_in_units / whitening_scale
+    if 1.0e-50 <= whitening_scale <= 1.0e50:
+        # Preserve the literal arithmetic (and its near-null accuracy) in the
+        # ordinary range.  The log-scale reconstruction is reserved for cases
+        # where a raw second or fourth power can leave float64 range.
+        whitened = whitened * whitening_scale
+        whitening_scale = 1.0
+    trace, trace_square = _czz_trace_estimators(whitened)
+    n = values.shape[0]
+    p = values.shape[1]
+    log_scale = math.log(whitening_scale)
+    distance = (
+        trace_square / p - 2.0 * trace / p + 1.0
+        if whitening_scale == 1.0
+        else _signed_power_sum(
+            (
+                (trace_square / p, 4.0 * log_scale),
+                (-2.0 * trace / p, 2.0 * log_scale),
+                (1.0, 0.0),
+            )
+        )
+    )
+    multiplier = 0.5 * n
+    if (
+        math.isfinite(distance)
+        and abs(distance) > np.finfo(np.float64).max / multiplier
+    ):
+        statistic = math.copysign(math.inf, distance)
+    else:
+        statistic = multiplier * distance
+    if math.isnan(statistic):
+        raise ValueError("the CZZ identity statistic could not be evaluated")
+    return HypothesisTestResult(
+        statistic=statistic,
+        pvalue=float(stats.norm.sf(statistic)),
+        method="Chen-Zhang-Zhong high-dimensional covariance identity test (2010)",
+        alternative="true covariance matrix differs from popcov",
+        data_name="x",
+        statistic_name="n V / 2",
+        calibration=_NORMAL_CALIBRATION,
+    )
+
+
+def czz_sphericity_1samp(x: ArrayLike) -> HypothesisTestResult:
+    """Perform the Chen--Zhang--Zhong high-dimensional sphericity test.
+
+    The null allows an unknown positive scalar multiple of the identity.  The
+    statistic is invariant to translation, orthogonal rotation, and a common
+    nonzero change of measurement units.
+    """
+    values = validate_2d_sample(x, name="x", minimum_rows=4)
+    if values.shape[1] < 2:
+        raise ValueError("czz_sphericity_1samp requires at least two features")
+    (centered,), _ = _center_together(values)
+    trace, trace_square = _czz_trace_estimators(centered)
+    n = values.shape[0]
+    p = values.shape[1]
+    distance = p * trace_square / (trace * trace) - 1.0
+    statistic = 0.5 * n * distance
+    if not math.isfinite(statistic):
+        raise ValueError("the CZZ sphericity statistic could not be evaluated")
+    return HypothesisTestResult(
+        statistic=statistic,
+        pvalue=float(stats.norm.sf(statistic)),
+        method="Chen-Zhang-Zhong high-dimensional covariance sphericity test (2010)",
+        alternative="true covariance matrix is not spherical",
+        data_name="x",
+        statistic_name="n U / 2",
+        calibration=_NORMAL_CALIBRATION,
+    )
+
+
 def _unit_projections(
     feature_count: int, n_projections: int, rng: RngLike
 ) -> NDArray[np.float64]:
@@ -459,6 +611,26 @@ def _clx_tail(statistic: float, feature_count: int) -> float:
     return float(-math.expm1(-rate))
 
 
+def _clx_entrywise_variance(
+    centered: NDArray[np.float64], covariance: NDArray[np.float64]
+) -> NDArray[np.float64]:
+    """Evaluate CLX's entrywise variances with bounded working storage."""
+    n, p = centered.shape
+    # Keep the temporary product tensor around 16 MiB when possible.  A
+    # feature block, rather than the fourth-moment subtraction identity,
+    # preserves relative accuracy when X_i X_j is nearly deterministic.
+    working_elements = 2_000_000
+    block_size = max(1, min(p, working_elements // max(1, n * p)))
+    theta = np.empty((p, p), dtype=np.float64)
+    for start in range(0, p, block_size):
+        stop = min(p, start + block_size)
+        products = centered[:, start:stop, None] * centered[:, None, :]
+        products -= covariance[None, start:stop, :]
+        np.square(products, out=products)
+        theta[start:stop] = np.mean(products, axis=0, dtype=np.float64)
+    return theta
+
+
 def clx_2samp(x: ArrayLike, y: ArrayLike) -> HypothesisTestResult:
     """Perform the Cai--Liu--Xia maximum covariance test (2013)."""
     first, second = _validate_pair(x, y)
@@ -468,10 +640,8 @@ def clx_2samp(x: ArrayLike, y: ArrayLike) -> HypothesisTestResult:
     (first_centered, second_centered), _ = _center_together(first, second)
     covariance1 = first_centered.T @ first_centered / first.shape[0]
     covariance2 = second_centered.T @ second_centered / second.shape[0]
-    products1 = first_centered[:, :, None] * first_centered[:, None, :]
-    products2 = second_centered[:, :, None] * second_centered[:, None, :]
-    theta1 = np.mean((products1 - covariance1) ** 2, axis=0, dtype=np.float64)
-    theta2 = np.mean((products2 - covariance2) ** 2, axis=0, dtype=np.float64)
+    theta1 = _clx_entrywise_variance(first_centered, covariance1)
+    theta2 = _clx_entrywise_variance(second_centered, covariance2)
     denominator = theta1 / first.shape[0] + theta2 / second.shape[0]
     if np.any(~np.isfinite(denominator)) or np.any(denominator <= 0.0):
         raise ValueError("every CLX entrywise variance estimate must be positive")
@@ -485,6 +655,60 @@ def clx_2samp(x: ArrayLike, y: ArrayLike) -> HypothesisTestResult:
         data_name="x and y",
         statistic_name="CLX",
         calibration="asymptotic type-I extreme-value distribution",
+    )
+
+
+def _clx_log_tail(statistic: float, feature_count: int) -> float:
+    """Return the CLX Gumbel upper-tail log probability without underflow."""
+    centered = (
+        statistic - 4.0 * math.log(feature_count) + math.log(math.log(feature_count))
+    )
+    log_rate = -0.5 * math.log(8.0 * math.pi) - 0.5 * centered
+    if log_rate < -36.0:
+        # -expm1(-r) / r differs from one by less than float64 precision.
+        return log_rate
+    if log_rate > 36.0:
+        # The tail is one to float64 precision; its log is zero.
+        return 0.0
+    rate = math.exp(log_rate)
+    return math.log(-math.expm1(-rate))
+
+
+def _ylx_2samp(x: ArrayLike, y: ArrayLike) -> HypothesisTestResult:
+    """Evaluate the validation-blocked Yu--Li--Xue combined test.
+
+    The test combines the dense Li--Chen and sparse Cai--Liu--Xia upper-tail
+    probabilities.  Component probabilities are evaluated in the log domain,
+    so an extreme component is never rounded to zero before combination.
+    This remains private until a 20,000-dataset joint component-independence
+    and null-size gate passes in an advertised computationally feasible regime.
+    """
+    first, second = _validate_pair(x, y, minimum_rows=4)
+    dense = lc_2samp(first, second)
+    sparse = clx_2samp(first, second)
+    log_dense = float(stats.norm.logsf(dense.statistic))
+    log_sparse = _clx_log_tail(sparse.statistic, first.shape[1])
+    statistic = -2.0 * (log_dense + log_sparse)
+    pvalue = float(stats.chi2.sf(statistic, 4.0))
+    dense_pvalue = (
+        0.0 if log_dense < math.log(np.nextafter(0.0, 1.0)) else math.exp(log_dense)
+    )
+    sparse_pvalue = (
+        0.0 if log_sparse < math.log(np.nextafter(0.0, 1.0)) else math.exp(log_sparse)
+    )
+    return HypothesisTestResult(
+        statistic=statistic,
+        pvalue=pvalue,
+        method="Yu-Li-Xue Fisher-combined covariance test (2024)",
+        alternative="true covariance matrices differ",
+        data_name="x and y",
+        statistic_name="Fisher combination",
+        calibration="asymptotic chi-square distribution with 4 degrees of freedom",
+        df=4.0,
+        diagnostics=(
+            ("Li-Chen p-value", dense_pvalue),
+            ("CLX p-value", sparse_pvalue),
+        ),
     )
 
 
@@ -571,7 +795,7 @@ def _log_prior_plus_half_residual_sum(
     return float(np.logaddexp(log_prior_scale, log_half_residual_sum))
 
 
-def lyl_2samp(
+def maximum_pairwise_bayes_factor_2samp(
     x: ArrayLike,
     y: ArrayLike,
     *,
@@ -593,7 +817,9 @@ def lyl_2samp(
     first, second = _validate_pair(x, y)
     feature_count = first.shape[1]
     if feature_count < 2:
-        raise ValueError("lyl_2samp requires at least two features")
+        raise ValueError(
+            "maximum_pairwise_bayes_factor_2samp requires at least two features"
+        )
     shape = validate_real_scalar(a0, name="a0")
     prior_scale = validate_real_scalar(b0, name="b0")
     exponent = validate_real_scalar(alpha, name="alpha")
@@ -667,44 +893,65 @@ def lyl_2samp(
     )
 
 
-def _whiten_covariance(
-    covariance: NDArray[np.float64], root: NDArray[np.float64]
-) -> NDArray[np.float64]:
-    left = np.linalg.solve(root, covariance)
-    whitened = np.linalg.solve(root, left.T).T
-    return 0.5 * (whitened + whitened.T)
+def _equilibrated_centered_groups(
+    groups: tuple[NDArray[np.float64], ...],
+) -> tuple[NDArray[np.float64], ...]:
+    """Center groups in common feature units without forming raw scatters."""
+    anchors = tuple(np.min(group, axis=0) for group in groups)
+    with np.errstate(over="ignore", invalid="ignore"):
+        shifted = tuple(
+            group - anchor for group, anchor in zip(groups, anchors, strict=True)
+        )
+    finite_columns = np.logical_and.reduce(
+        [np.all(np.isfinite(group), axis=0) for group in shifted]
+    )
+    if not np.all(finite_columns):
+        # Only overflowing columns need scale-first subtraction. A global
+        # divisor could erase perfectly representable variation in other units.
+        columns = ~finite_columns
+        scales = np.maximum.reduce(
+            [np.max(np.abs(group[:, columns]), axis=0) for group in groups]
+        )
+        for group, anchor, differences in zip(groups, anchors, shifted, strict=True):
+            differences[:, columns] = (
+                group[:, columns] / scales - anchor[columns] / scales
+            )
+    scales = np.maximum.reduce([np.max(np.abs(group), axis=0) for group in shifted])
+    scales[scales == 0.0] = 1.0
+    scaled = tuple(group / scales for group in shifted)
+    return tuple(group - np.mean(group, axis=0) for group in scaled)
 
 
 def schott_2001_ksamp(*samples: ArrayLike) -> HypothesisTestResult:
     """Perform Schott's classical Wald test for covariance homogeneity."""
     groups = validate_multivariate_groups(samples, minimum_rows=2)
-    centered_groups, _ = _center_together(*groups)
+    centered_groups = _equilibrated_centered_groups(groups)
     degrees = np.asarray([group.shape[0] - 1 for group in groups], dtype=np.float64)
-    covariances = tuple(_sample_covariance(group) for group in centered_groups)
     total_degrees = float(np.sum(degrees))
-    pooled = sum(
-        (degree / total_degrees) * covariance
-        for degree, covariance in zip(degrees, covariances, strict=True)
+    stacked = np.vstack(centered_groups)
+    feature_count = groups[0].shape[1]
+    try:
+        left, singular_values, _ = np.linalg.svd(stacked, full_matrices=False)
+    except np.linalg.LinAlgError as exc:
+        raise ValueError("the pooled covariance rank could not be evaluated") from exc
+    rank_tolerance = (
+        np.finfo(np.float64).eps * max(stacked.shape) * float(singular_values[0])
     )
-    eigenvalues = np.linalg.eigvalsh(pooled)
-    spectral_scale = float(eigenvalues[-1])
-    rank_tolerance = np.finfo(np.float64).eps * pooled.shape[0] * spectral_scale
-    if eigenvalues[0] <= rank_tolerance:
+    if singular_values.size < feature_count or singular_values[-1] <= rank_tolerance:
         raise ValueError(
             "the pooled covariance must be numerically positive definite for "
             "Schott (2001)"
         )
-    try:
-        root = np.linalg.cholesky(pooled)
-    except np.linalg.LinAlgError as exc:
-        raise ValueError(
-            "the pooled covariance must be positive definite for Schott (2001)"
-        ) from exc
-    feature_count = groups[0].shape[1]
+    # If stacked = U D V', then sqrt(total_degrees) U is whitened against
+    # the pooled covariance. Working directly with U avoids squaring the
+    # condition number in a scatter matrix and never inverts small eigenvalues.
     identity = np.eye(feature_count, dtype=np.float64)
     statistic_sum = 0.0
-    for degree, covariance in zip(degrees, covariances, strict=True):
-        whitened = _whiten_covariance(covariance, root)
+    start = 0
+    for degree, group in zip(degrees, groups, strict=True):
+        block = left[start : start + group.shape[0], :feature_count]
+        start += group.shape[0]
+        whitened = (total_degrees / degree) * (block.T @ block)
         difference = whitened - identity
         statistic_sum += (
             degree

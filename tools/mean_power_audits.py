@@ -1,4 +1,4 @@
-"""Run targeted public-API alternative-power audits for mean procedures.
+"""Run targeted public-API power audits for mean and native CZZ procedures.
 
 The simulations in this module are release evidence rather than unit tests.
 They intentionally call only public functions and use independent data and
@@ -19,7 +19,7 @@ from typing import Final
 import numpy as np
 import scipy
 
-from pysht import equaldist, mean
+from pysht import covariance, equaldist, mean
 from tools.release_simulations import LEVELS
 
 type FrequentistEvaluator = Callable[[np.random.Generator, np.random.Generator], float]
@@ -38,6 +38,7 @@ class PowerScenario:
     public_call: str
     replications: int
     evaluate: FrequentistEvaluator
+    seed: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,6 +228,48 @@ def _scenario_registry() -> tuple[PowerScenario, ...]:
             rng=auxiliary,
         ).pvalue
 
+    def cq_2samp(data: np.random.Generator, auxiliary: np.random.Generator) -> float:
+        del auxiliary
+        return mean.cq_2samp(
+            _normal(data, 50, 1_000) + 0.12,
+            _normal(data, 60, 1_000),
+        ).pvalue
+
+    def li_1samp(data: np.random.Generator, auxiliary: np.random.Generator) -> float:
+        del auxiliary
+        return mean.li_1samp(_normal(data, 6, 1_000) + 0.2).pvalue
+
+    def li_2samp(data: np.random.Generator, auxiliary: np.random.Generator) -> float:
+        del auxiliary
+        return mean.li_2samp(
+            _normal(data, 6, 1_000) + 0.22,
+            _normal(data, 9, 1_000),
+        ).pvalue
+
+    def li_ksamp(data: np.random.Generator, auxiliary: np.random.Generator) -> float:
+        del auxiliary
+        return mean.li_ksamp(
+            _normal(data, 6, 500),
+            _normal(data, 8, 500) + 0.2,
+            _normal(data, 10, 500) - 0.2,
+        ).pvalue
+
+    def czz_identity_1samp(
+        data: np.random.Generator, auxiliary: np.random.Generator
+    ) -> float:
+        del auxiliary
+        values = _normal(data, 100, 100)
+        values[:, 0] *= 1.35
+        return covariance.czz_identity_1samp(values).pvalue
+
+    def czz_sphericity_1samp(
+        data: np.random.Generator, auxiliary: np.random.Generator
+    ) -> float:
+        del auxiliary
+        values = _normal(data, 100, 100)
+        values[:, 0] *= 1.35
+        return covariance.czz_sphericity_1samp(values).pvalue
+
     return (
         PowerScenario(
             "mean.ttest_1samp",
@@ -375,15 +418,71 @@ def _scenario_registry() -> tuple[PowerScenario, ...]:
             RESAMPLING_REPLICATIONS,
             bg_2samp,
         ),
+        PowerScenario(
+            "mean.cq_2samp",
+            "N_1000(0.12*1,I), n_x=50, versus N_1000(0,I), n_y=60",
+            "mean.cq_2samp(x, y)",
+            2_000,
+            cq_2samp,
+            seed=20260941,
+        ),
+        PowerScenario(
+            "mean.li_1samp",
+            "N_1000(0.2*1,I), n=6; fixed-small-n, high-p regime",
+            "mean.li_1samp(x)",
+            2_000,
+            li_1samp,
+            seed=20260942,
+        ),
+        PowerScenario(
+            "mean.li_2samp",
+            "N_1000(0.22*1,I), n_x=6, versus N_1000(0,I), n_y=9",
+            "mean.li_2samp(x, y)",
+            2_000,
+            li_2samp,
+            seed=20260943,
+        ),
+        PowerScenario(
+            "mean.li_ksamp",
+            "three N_500(mu_i,I) groups, n=(6,8,10), means (0,0.2*1,-0.2*1)",
+            "mean.li_ksamp(x, y, z)",
+            2_000,
+            li_ksamp,
+            seed=20260944,
+        ),
+        PowerScenario(
+            "covariance.czz_identity_1samp",
+            "N_100(0,diag(1.35^2,1,...,1)), n=100; null covariance I",
+            "covariance.czz_identity_1samp(x)",
+            2_000,
+            czz_identity_1samp,
+            seed=20260945,
+        ),
+        PowerScenario(
+            "covariance.czz_sphericity_1samp",
+            "N_100(0,diag(1.35^2,1,...,1)), n=100",
+            "covariance.czz_sphericity_1samp(x)",
+            2_000,
+            czz_sphericity_1samp,
+            seed=20260946,
+        ),
     )
 
 
 def run_scenario(scenario: PowerScenario, index: int) -> PowerResult:
     """Run one scenario with its documented independent stream pair."""
-    scenario_seed = FIRST_SCENARIO_SEED + index
-    data_seed, auxiliary_seed = np.random.SeedSequence(scenario_seed).spawn(2)
-    data_rng = _generator(data_seed)
-    auxiliary_rng = _generator(auxiliary_seed)
+    scenario_seed = (
+        FIRST_SCENARIO_SEED + index if scenario.seed is None else scenario.seed
+    )
+    if scenario.seed is None:
+        data_seed, auxiliary_seed = np.random.SeedSequence(scenario_seed).spawn(2)
+        data_rng = _generator(data_seed)
+        auxiliary_rng = _generator(auxiliary_seed)
+    else:
+        data_rng = np.random.default_rng(scenario_seed)
+        auxiliary_rng = np.random.default_rng(
+            np.random.SeedSequence([scenario_seed, 1])
+        )
     counts = np.zeros(len(LEVELS), dtype=np.int64)
     levels = np.asarray(LEVELS)
     for _ in range(scenario.replications):
@@ -414,18 +513,20 @@ def _run_lyl_direction() -> dict[str, object]:
     for replication in range(replications):
         first = _normal(data_rng, 30, 60)
         second = _normal(data_rng, 30, 60)
-        null_values[replication] = mean.lyl_2samp(first, second).statistic
-        alternative_values[replication] = mean.lyl_2samp(
+        null_values[replication] = mean.maximum_pairwise_bayes_factor_2samp(
+            first, second
+        ).statistic
+        alternative_values[replication] = mean.maximum_pairwise_bayes_factor_2samp(
             first,
             second + shift,
         ).statistic
     return {
-        "method": "mean.lyl_2samp",
+        "method": "mean.maximum_pairwise_bayes_factor_2samp",
         "design": (
             "n_x=n_y=30,p=60; matched null is N(0,I) versus N(0,I), "
             "alternative adds 1.0 to the first three coordinates of y"
         ),
-        "public_call": "mean.lyl_2samp(x, y)",
+        "public_call": "mean.maximum_pairwise_bayes_factor_2samp(x, y)",
         "seed": scenario_seed,
         "replications": replications,
         "null_median_max_log_bf": float(np.median(null_values)),
@@ -445,7 +546,8 @@ def _select_scenarios(names: Sequence[str]) -> tuple[tuple[int, PowerScenario], 
         return indexed
     requested = set(names)
     available = {scenario.method for _, scenario in indexed}
-    unknown = sorted(requested - available - {"mean.lyl_2samp"})
+    bayesian_name = "mean.maximum_pairwise_bayes_factor_2samp"
+    unknown = sorted(requested - available - {bayesian_name})
     if unknown:
         raise ValueError(f"unknown scenarios: {', '.join(unknown)}")
     return tuple(
@@ -465,10 +567,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     payload: dict[str, object] = {
         "levels": LEVELS,
         "stream_contract": (
-            "Scenario i has integer seed FIRST_SCENARIO_SEED+i. Its SeedSequence "
-            "spawns child 0 for data and child 1 as one persistent PCG64 auxiliary "
-            "Generator; both PCG64 streams advance in replication order and reset "
-            "between methods."
+            "Compatibility scenarios use FIRST_SCENARIO_SEED+i and spawn data "
+            "then auxiliary PCG64 streams. Native scenarios carry their ledger "
+            "seed explicitly; their data stream is default_rng(seed) and their "
+            "independent auxiliary stream is SeedSequence([seed,1]). Both streams "
+            "advance in replication order and reset between methods."
         ),
         "python": platform.python_version(),
         "numpy": np.__version__,
@@ -478,7 +581,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             asdict(run_scenario(scenario, index)) for index, scenario in selected
         ],
     }
-    if not arguments.scenarios or "mean.lyl_2samp" in arguments.scenarios:
+    if (
+        not arguments.scenarios
+        or "mean.maximum_pairwise_bayes_factor_2samp" in arguments.scenarios
+    ):
         payload["bayesian"] = _run_lyl_direction()
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0
