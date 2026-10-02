@@ -259,8 +259,17 @@ def validate_covariance_matrix(
     if not np.all(np.isfinite(eigenvalues)):
         raise ValueError(f"{name} eigenvalues could not be evaluated")
     if positive_definite:
-        if np.any(eigenvalues <= 0.0):
-            raise ValueError(f"{name} must be positive definite")
+        # Equilibration and the eigensolver can turn an exact zero eigenvalue
+        # into a small positive one.  Require definiteness resolvable above
+        # the matrix-size-scaled backward-error threshold, in correlation
+        # units so a legitimate change of marginal units cannot erase rank.
+        tolerance = (
+            correlation.shape[0]
+            * np.finfo(np.float64).eps
+            * float(np.max(np.abs(eigenvalues)))
+        )
+        if eigenvalues[0] <= tolerance:
+            raise ValueError(f"{name} must be numerically positive definite")
     elif np.any(eigenvalues < -100.0 * np.finfo(np.float64).eps):
         raise ValueError(f"{name} must be positive semidefinite")
     return values

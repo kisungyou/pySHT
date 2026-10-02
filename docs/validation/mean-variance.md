@@ -123,6 +123,12 @@ $Y=\{-10^{87},10^{87}\}$, the combined p-value remains the representable
 `5.110888469223042e-172` instead of collapsing to zero during an intermediate
 F tail calculation.
 
+The beta-tail evaluator shares the variance module's positive series and
+continued fraction. It retains logarithmic probabilities when the ordinary
+beta CDF underflows, without discarding a hypergeometric correction. An
+independent integer-shape binomial-tail identity covers large samples, and
+an exact F(1,1) identity covers partially subnormal ratios of sample scales.
+
 ## Muirhead second-order approximation
 
 With $N=n+m$, set

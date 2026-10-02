@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterator
+from decimal import Decimal, localcontext
 from itertools import combinations
 from typing import Final, Literal
 
@@ -20,6 +21,7 @@ from ._validation import (
     validate_real_scalar,
     validate_simplex_sample,
 )
+from .uniformity import _scaled_log_power_sum
 
 __all__ = ["alpha_energy_ksamp", "ehy_uniformity", "uniformity"]
 
@@ -145,6 +147,148 @@ def _initial_general_alpha(values: NDArray[np.float64]) -> NDArray[np.float64]:
     return np.maximum(means * concentration, 1.0e-6)
 
 
+def _concentrated_dirichlet_lrt(
+    values: NDArray[np.float64], *, symmetric: bool, tolerance: float, max_iter: int
+) -> float:
+    """Resolve concentrated fits beyond binary64 score/likelihood precision.
+
+    Absolute alpha-coordinate scores vanish as concentration increases, even
+    far from the optimum. Here Newton steps must be small relative to every
+    parameter. Decimal arithmetic retains both the Jensen gap of nearly
+    identical compositions and cancellations in the log-gamma normalizer.
+    """
+    with localcontext() as context:
+        context.prec = 80
+        zero, one, two = Decimal(0), Decimal(1), Decimal(2)
+        count, dimension = values.shape
+        n, d = Decimal(count), Decimal(dimension)
+        rows = [[Decimal.from_float(float(value)) for value in row] for row in values]
+        rows = [[value / sum(row, zero) for value in row] for row in rows]
+        means = [sum((row[j] for row in rows), zero) / n for j in range(dimension)]
+        logs = [sum((row[j].ln() for row in rows), zero) / n for j in range(dimension)]
+        # Bernoulli B_2 through B_24; at x>=128 the next omitted term in
+        # digamma is below 2e-49. Large concentration arguments need no shift.
+        bernoulli = [
+            Decimal(a) / Decimal(b)
+            for a, b in (
+                (1, 6),
+                (-1, 30),
+                (1, 42),
+                (-1, 30),
+                (5, 66),
+                (-691, 2730),
+                (7, 6),
+                (-3617, 510),
+                (43867, 798),
+                (-174611, 330),
+                (854513, 138),
+                (-236364091, 2730),
+            )
+        ]
+        log_two_pi = Decimal(
+            "6.283185307179586476925286766559005768394338798750211641949889"
+        ).ln()
+
+        def special_values(a: Decimal) -> tuple[Decimal, Decimal, Decimal]:
+            shifted = a
+            psi_shift = zero
+            trigamma_shift = zero
+            gamma_shift = zero
+            while shifted < 128:
+                psi_shift -= one / shifted
+                trigamma_shift += one / shifted**2
+                gamma_shift -= shifted.ln()
+                shifted += one
+            inverse = one / shifted
+            psi = shifted.ln() - inverse / two
+            trigamma = inverse + inverse**2 / two
+            gamma = (shifted - one / two) * shifted.ln() - shifted + log_two_pi / two
+            for k, b in enumerate(bernoulli, start=1):
+                psi -= b * inverse ** (2 * k) / Decimal(2 * k)
+                trigamma += b * inverse ** (2 * k + 1)
+                gamma += b * inverse ** (2 * k - 1) / Decimal(2 * k * (2 * k - 1))
+            return psi + psi_shift, trigamma + trigamma_shift, gamma + gamma_shift
+
+        if symmetric:
+            gap = -d.ln() - sum(logs, zero) / d
+            if gap <= 0:
+                raise ValueError(
+                    "the symmetric Dirichlet concentration MLE is unbounded"
+                )
+            initial = (d - one) / (two * d * gap)
+            alpha = [initial] * dimension
+        else:
+            gap = sum(
+                (
+                    mean * (mean.ln() - log)
+                    for mean, log in zip(means, logs, strict=True)
+                ),
+                zero,
+            )
+            if gap <= 0:
+                raise ValueError("the general Dirichlet concentration MLE is unbounded")
+            concentration = (d - one) / (two * gap)
+            alpha = [mean * concentration for mean in means]
+
+        def likelihood(parameters: list[Decimal]) -> Decimal:
+            return special_values(sum(parameters, zero))[2] - sum(
+                (
+                    special_values(a)[2] - (a - one) * log
+                    for a, log in zip(parameters, logs, strict=True)
+                ),
+                zero,
+            )
+
+        current = likelihood(alpha)
+        requested = Decimal.from_float(tolerance)
+        for _ in range(max_iter):
+            psi_sum, trigamma_sum, _ = special_values(sum(alpha, zero))
+            marginal = [special_values(a) for a in alpha]
+            gradient = [
+                psi_sum - item[0] + log
+                for item, log in zip(marginal, logs, strict=True)
+            ]
+            if symmetric:
+                step = -(sum(gradient, zero) / d) / (d * trigamma_sum - marginal[0][1])
+                direction = [step] * dimension
+            else:
+                inverse_diagonal = [one / item[1] for item in marginal]
+                shared = sum(
+                    (
+                        g * inverse
+                        for g, inverse in zip(gradient, inverse_diagonal, strict=True)
+                    ),
+                    zero,
+                ) / (one / trigamma_sum - sum(inverse_diagonal, zero))
+                direction = [
+                    (g + shared) * inverse
+                    for g, inverse in zip(gradient, inverse_diagonal, strict=True)
+                ]
+            relative_step = max(
+                abs(step / a) for step, a in zip(direction, alpha, strict=True)
+            )
+            if relative_step <= requested:
+                null = special_values(d)[2]
+                return float(two * n * (current - null))
+            fraction = one
+            accepted = False
+            for _ in range(80):
+                candidate = [
+                    a + fraction * step
+                    for a, step in zip(alpha, direction, strict=True)
+                ]
+                if min(candidate) > 0:
+                    candidate_likelihood = likelihood(candidate)
+                    if candidate_likelihood >= current:
+                        alpha, current = candidate, candidate_likelihood
+                        accepted = True
+                        break
+                fraction /= two
+            if not accepted:
+                break
+        raise RuntimeError("concentrated Dirichlet maximum likelihood did not converge")
+
+
 def _general_mle(
     values: NDArray[np.float64],
     mean_log: NDArray[np.float64],
@@ -159,8 +303,6 @@ def _general_mle(
         alpha_sum = float(np.sum(alpha))
         gradient = special.digamma(alpha_sum) - special.digamma(alpha) + mean_log
         gradient_norm = float(np.max(np.abs(gradient)))
-        if gradient_norm <= tolerance:
-            return alpha
 
         diagonal = special.polygamma(1, alpha)
         shared = float(special.polygamma(1, alpha_sum))
@@ -170,6 +312,13 @@ def _general_mle(
             direction = -np.linalg.solve(hessian, gradient)
         except np.linalg.LinAlgError as exc:
             raise RuntimeError("the Dirichlet likelihood Hessian is singular") from exc
+        # An absolute score alone can be tiny far from a concentrated MLE.
+        # Verify that the full Newton correction is relatively small as well.
+        if (
+            gradient_norm <= tolerance
+            and float(np.max(np.abs(direction) / alpha)) <= tolerance
+        ):
+            return alpha
         directional_derivative = float(np.dot(gradient, direction))
         if not math.isfinite(directional_derivative) or directional_derivative <= 0.0:
             break
@@ -314,6 +463,34 @@ def uniformity(
     sample_size, dimension = values.shape
     log_values = np.log(values)
     mean_log = np.mean(log_values, axis=0, dtype=np.float64)
+    if selected_model == "symmetric":
+        if np.all(values == values[0, 0]):
+            raise ValueError("the symmetric Dirichlet concentration MLE is unbounded")
+        concentrated = abs(math.log(dimension) + float(np.mean(mean_log))) < 1e-5
+    else:
+        if np.all(values == values[0]):
+            raise ValueError(
+                "the general Dirichlet concentration MLE is unbounded for identical rows"
+            )
+        concentrated = float(np.sum(_initial_general_alpha(values))) >= 1e5
+    if concentrated:
+        statistic = _concentrated_dirichlet_lrt(
+            values,
+            symmetric=selected_model == "symmetric",
+            tolerance=convergence_tolerance,
+            max_iter=iterations,
+        )
+        degrees_of_freedom = 1.0 if selected_model == "symmetric" else float(dimension)
+        return HypothesisTestResult(
+            statistic=statistic,
+            pvalue=float(stats.chi2.sf(statistic, degrees_of_freedom)),
+            method=f"Simplex uniformity LRT against a {selected_model} Dirichlet model",
+            alternative=_ALTERNATIVE,
+            data_name="x",
+            statistic_name="LR",
+            calibration="Wilks asymptotic chi-square approximation",
+            df=degrees_of_freedom,
+        )
     null_alpha = np.ones(dimension, dtype=np.float64)
     null_log_likelihood = _dirichlet_log_likelihood_per_observation(
         null_alpha, mean_log
@@ -330,11 +507,6 @@ def uniformity(
         degrees_of_freedom = 1.0
         method_name = "Simplex uniformity LRT against a symmetric Dirichlet model"
     else:
-        if np.all(values == values[0]):
-            raise ValueError(
-                "the general Dirichlet maximum-likelihood estimate is unbounded "
-                "for identical rows"
-            )
         fitted_alpha = _general_mle(
             values,
             mean_log,
@@ -383,13 +555,10 @@ def _ehy_simplex_log_statistic(
     sample_size, components = values.shape
     manifold_dimension = components - 1
     distances = _component_invariant_distances(values)
-    squared_distances = distances * distances
-    np.fill_diagonal(squared_distances, math.inf)
-    nearest_squared = np.partition(squared_distances, n_neighbors - 1, axis=1)[
-        :, :n_neighbors
-    ]
+    np.fill_diagonal(distances, math.inf)
+    nearest = np.partition(distances, n_neighbors - 1, axis=1)[:, :n_neighbors]
     with np.errstate(divide="ignore", invalid="ignore"):
-        log_radius = 0.5 * np.log(nearest_squared)
+        log_radius = np.log(nearest)
     log_unit_ball_volume = 0.5 * manifold_dimension * math.log(math.pi) - float(
         special.gammaln(0.5 * manifold_dimension + 1.0)
     )
@@ -398,13 +567,13 @@ def _ehy_simplex_log_statistic(
     log_uniform_density = float(special.gammaln(components)) - 0.5 * math.log(
         components
     )
-    log_scores = alpha * (
+    log_volumes = (
         log_unit_ball_volume
         + math.log(sample_size)
         + manifold_dimension * log_radius
         + log_uniform_density
     )
-    return float(special.logsumexp(np.sort(log_scores, axis=None)))
+    return _scaled_log_power_sum(log_volumes, alpha)
 
 
 def _nonnegative_from_log(log_value: float) -> float:
@@ -481,7 +650,7 @@ def ehy_uniformity(
         )
     pvalue, standard_error, interval = monte_carlo_calibration(exceedances, resamples)
     return ResamplingTestResult(
-        statistic=_nonnegative_from_log(observed_log),
+        statistic=_nonnegative_from_log(observed_log * max(1.0, power)),
         pvalue=pvalue,
         method="Ebner-Henze-Yukich nearest-neighbor simplex-uniformity test (2018)",
         alternative=_ALTERNATIVE,
@@ -702,8 +871,7 @@ def _component_invariant_distances(
     result = np.zeros((sample_size, sample_size), dtype=np.float64)
     for first in range(sample_size - 1):
         differences = values[first + 1 :] - values[first]
-        squared = np.sort(differences * differences, axis=1)
-        distances = np.sqrt(np.sum(squared, axis=1, dtype=np.float64))
+        distances = np.hypot.reduce(np.sort(np.abs(differences), axis=1), axis=1)
         result[first, first + 1 :] = distances
         result[first + 1 :, first] = distances
     return result

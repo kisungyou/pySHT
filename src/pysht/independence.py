@@ -344,6 +344,7 @@ def _kernel_matrices(
             distance_geometry(block),
             kernel=block_kernel,
             bandwidth=block_bandwidth,
+            offset=True,
         )
         matrices.append(matrix)
         selected_kernels.append(current_kernel)
@@ -357,26 +358,39 @@ def _kernel_matrices(
     )
 
 
+def _product_remainder(
+    factors: tuple[NDArray[np.float64], ...],
+) -> NDArray[np.float64]:
+    """Evaluate product(1+u) - 1 - sum(u) without constant cancellation."""
+    linear = np.zeros_like(factors[0])
+    remainder = np.zeros_like(factors[0])
+    for factor in factors:
+        remainder += factor * (linear + remainder)
+        linear += factor
+    return remainder
+
+
 def _dhsic_statistic(
     grams: tuple[NDArray[np.float64], ...],
     indices: tuple[NDArray[np.intp], ...],
 ) -> float:
-    """Evaluate ``dHSIC_hat_n`` from Definition 4 of Pfister et al."""
+    """Evaluate Definition 4 using offsets from the constant-one kernel.
+
+    The constant and linear offset terms cancel identically across the three
+    expectations. Removing them analytically retains the quadratic signal
+    when a bandwidth makes every kernel entry close to one.
+    """
+    if len(grams) == 2:
+        centered = tuple(double_center(matrix) for matrix in grams)
+        return _normalized_distance_covariance(centered, indices)
     aligned = tuple(
         _aligned(matrix, index) for matrix, index in zip(grams, indices, strict=True)
     )
-    sample_size = aligned[0].shape[0]
-    product_matrix = np.ones_like(aligned[0])
-    for matrix in aligned:
-        product_matrix *= matrix
-    first_term = float(np.mean(product_matrix, dtype=np.float64))
-    second_term = math.prod(
-        float(np.mean(matrix, dtype=np.float64)) for matrix in aligned
-    )
-    row_product = np.ones(sample_size, dtype=np.float64)
-    for matrix in aligned:
-        row_product *= np.mean(matrix, axis=1, dtype=np.float64)
-    third_term = 2.0 * float(np.mean(row_product, dtype=np.float64))
+    first_term = float(np.mean(_product_remainder(aligned), dtype=np.float64))
+    grand_means = tuple(np.asarray(np.mean(matrix)) for matrix in aligned)
+    second_term = float(_product_remainder(grand_means))
+    row_means = tuple(np.mean(matrix, axis=1, dtype=np.float64) for matrix in aligned)
+    third_term = 2.0 * float(np.mean(_product_remainder(row_means), dtype=np.float64))
     estimate = first_term + second_term - third_term
     scale = abs(first_term) + abs(second_term) + abs(third_term)
     if estimate < 0.0 and abs(estimate) <= 500.0 * np.finfo(np.float64).eps * scale:
@@ -390,20 +404,19 @@ def _dhsic_statistic_batch(
     grams: tuple[NDArray[np.float64], ...],
     plans: NDArray[np.intp],
 ) -> NDArray[np.float64]:
+    if len(grams) == 2:
+        centered = tuple(double_center(matrix) for matrix in grams)
+        return _normalized_distance_covariance_batch(centered, plans)
     aligned = tuple(
         _aligned_batch(matrix, plans[:, block]) for block, matrix in enumerate(grams)
     )
-    sample_size = aligned[0].shape[1]
-    product_matrix = np.ones_like(aligned[0])
-    for matrix in aligned:
-        product_matrix *= matrix
-    first_term = np.mean(product_matrix, axis=(1, 2), dtype=np.float64)
-    second_term = np.ones(plans.shape[0], dtype=np.float64)
-    row_product = np.ones((plans.shape[0], sample_size), dtype=np.float64)
-    for matrix in aligned:
-        second_term *= np.mean(matrix, axis=(1, 2), dtype=np.float64)
-        row_product *= np.mean(matrix, axis=2, dtype=np.float64)
-    third_term = 2.0 * np.mean(row_product, axis=1, dtype=np.float64)
+    first_term = np.mean(_product_remainder(aligned), axis=(1, 2), dtype=np.float64)
+    grand_means = tuple(
+        np.mean(matrix, axis=(1, 2), dtype=np.float64) for matrix in aligned
+    )
+    second_term = _product_remainder(grand_means)
+    row_means = tuple(np.mean(matrix, axis=2, dtype=np.float64) for matrix in aligned)
+    third_term = 2.0 * np.mean(_product_remainder(row_means), axis=1, dtype=np.float64)
     estimates = first_term + second_term - third_term
     scale = np.abs(first_term) + np.abs(second_term) + np.abs(third_term)
     small_negative = (estimates < 0.0) & (
@@ -537,10 +550,9 @@ def dhsic(
     observed = sample_size * observed_unscaled
     return _resampling_result(
         observed=observed,
-        statistic=lambda indices: sample_size * _dhsic_statistic(grams, indices),
-        batch_statistic=lambda plans: (
-            sample_size * _dhsic_statistic_batch(grams, plans)
-        ),
+        statistic=lambda indices: _dhsic_statistic(grams, indices),
+        batch_statistic=lambda plans: _dhsic_statistic_batch(grams, plans),
+        calibration_observed=observed_unscaled,
         blocks=blocks,
         method="d-variable Hilbert-Schmidt independence criterion test (2018)",
         statistic_name="n dHSIC_hat",

@@ -14,7 +14,7 @@ from typing import Final, Literal, SupportsIndex, cast
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
-from scipy import optimize, stats
+from scipy import optimize, special, stats
 
 from ._resampling import monte_carlo_calibration, upper_tail_threshold
 from ._results import BayesFactorTestResult, HypothesisTestResult, ResamplingTestResult
@@ -112,6 +112,34 @@ def _rescale(value: float, scale: float) -> float:
         return float(np.float64(value) * np.float64(scale))
 
 
+def _rescale_shift(value: float, scale: float, origin: float) -> float:
+    """Restore an anchored coordinate, retaining opposite-sign cancellation."""
+    if math.isinf(value):
+        return value
+    restored = _rescale(value, scale)
+    if math.isinf(restored):
+        return _rescale(origin / scale + value, scale)
+    return origin + restored
+
+
+def _difference_in_units(
+    origin: NDArray[np.float64],
+    null: NDArray[np.float64] | float,
+    scale: NDArray[np.float64] | float,
+) -> NDArray[np.float64]:
+    """Subtract before dividing unless opposite finite endpoints overflow."""
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        difference = origin - null
+        return np.asarray(
+            np.where(
+                np.isfinite(difference),
+                difference / scale,
+                origin / scale - np.asarray(null) / scale,
+            ),
+            dtype=np.float64,
+        )
+
+
 def _rescale_square(value: float, scale: float) -> float:
     with np.errstate(over="ignore", invalid="ignore"):
         return float(np.float64(value) * np.float64(scale) * np.float64(scale))
@@ -130,6 +158,45 @@ def _t_pvalue(statistic: float, df: float, alternative: Alternative) -> float:
     return float(stats.t.sf(statistic, df))
 
 
+def _t_lower_quantile(probability: float, df: float) -> float:
+    if probability >= 1e-10:
+        return float(stats.t.ppf(probability, df))
+    # P(T <= -t) = I_{df/(df+t**2)}(df/2, 1/2) / 2. Older
+    # supported SciPy t inverses clip the root in very small tails.
+    a = df / 2.0
+    beta_root = float(special.betaincinv(a, 0.5, 2.0 * probability))
+    if beta_root < math.sqrt(np.finfo(np.float64).tiny):
+        # I_z(a,b) = z**a / (a B(a,b)) (1 + O(z)). At this threshold
+        # the omitted correction is far smaller than machine precision;
+        # retaining log(z) also avoids a quantized or zero subnormal root.
+        log_root = (
+            math.log(probability)
+            + math.log(2.0)
+            + math.log(a)
+            + float(special.betaln(a, 0.5))
+        ) / a
+    else:
+        log_root = math.log(beta_root)
+    log_quantile = 0.5 * (math.log(df) + math.log1p(-beta_root) - log_root)
+    if log_quantile > math.log(np.finfo(np.float64).max):
+        return -math.inf
+    return -math.exp(log_quantile)
+
+
+def _positive_product(*factors: float) -> float:
+    """Multiply positive factors with one final underflow/overflow rounding."""
+    mantissa = 1.0
+    exponent = 0
+    for factor in factors:
+        part, power = math.frexp(factor)
+        mantissa *= part
+        exponent += power
+    try:
+        return math.ldexp(mantissa, exponent)
+    except OverflowError:
+        return math.inf
+
+
 def _t_confidence_interval(
     estimate_scaled: float,
     standard_error_scaled: float,
@@ -137,20 +204,43 @@ def _t_confidence_interval(
     alternative: Alternative,
     confidence_level: float,
     scale: float,
+    origin: float = 0.0,
 ) -> tuple[float, float]:
+    estimate = _rescale_shift(estimate_scaled, scale, origin)
     if alternative == "two-sided":
-        quantile = float(stats.t.isf((1.0 - confidence_level) / 2.0, df))
-        lower_scaled = estimate_scaled - quantile * standard_error_scaled
-        upper_scaled = estimate_scaled + quantile * standard_error_scaled
+        if confidence_level <= 1e-5:
+            # Invert c = 2 f(0) [t - (df+1)t**3/(6df) + O(t**5)].
+            # This avoids losing c when (1-c)/2 rounds to one half and
+            # avoids squaring a subnormal c in the incomplete-beta inverse.
+            slope = 1.0 / (2.0 * float(stats.t.pdf(0.0, df)))
+            linear = confidence_level * slope
+            correction = 1.0 + (1.0 + 1.0 / df) * linear**2 / 6.0
+            margin = _positive_product(
+                confidence_level, slope * correction, standard_error_scaled, scale
+            )
+            return estimate - margin, estimate + margin
+        elif confidence_level < 0.5:
+            # P(|T| <= t) = I_{t**2/(df+t**2)}(1/2, df/2).
+            central = float(special.betaincinv(0.5, df / 2.0, confidence_level))
+            quantile = math.sqrt(df * central / (1.0 - central))
+        else:
+            quantile = float(stats.t.isf((1.0 - confidence_level) / 2.0, df))
+        lower_scaled = -quantile * standard_error_scaled
+        upper_scaled = quantile * standard_error_scaled
     else:
-        quantile = float(stats.t.isf(1.0 - confidence_level, df))
+        # The direct lower-tail quantile retains tiny confidence levels for
+        # which subtracting the level from one would round to exactly one.
+        quantile = _t_lower_quantile(confidence_level, df)
         if alternative == "less":
             lower_scaled = -math.inf
-            upper_scaled = estimate_scaled + quantile * standard_error_scaled
+            upper_scaled = quantile * standard_error_scaled
         else:
-            lower_scaled = estimate_scaled - quantile * standard_error_scaled
+            lower_scaled = -quantile * standard_error_scaled
             upper_scaled = math.inf
-    return _rescale(lower_scaled, scale), _rescale(upper_scaled, scale)
+    return (
+        _rescale_shift(lower_scaled, scale, estimate),
+        _rescale_shift(upper_scaled, scale, estimate),
+    )
 
 
 def _mean_alternative(subject: str, alternative: Alternative, null: float) -> str:
@@ -180,35 +270,31 @@ def ttest_1samp(
     selected_alternative = validate_alternative(alternative)
     level = validate_confidence_level(confidence_level)
 
-    # Form the null-centered observations in the original coordinate system
-    # before selecting a numerical scale.  Scaling the raw location first can
-    # erase all meaningful variation when ``popmean`` is very large.
-    scaled, scale = _scaled_centered_values(values, null)
+    # Covariance and confidence limits depend only on the observations. A
+    # distant null must not erase residuals before their variance is formed.
+    origin = float(np.min(values))
+    scaled, scale = _scaled_centered_values(values, origin)
     mean_scaled, sd_scaled = _scaled_mean_sd(scaled, 1.0)
     if sd_scaled == 0.0:
         raise ValueError("the sample variance must be positive")
     n = values.size
     df = float(n - 1)
     standard_error_scaled = sd_scaled / math.sqrt(n)
-    statistic = mean_scaled / standard_error_scaled
+    difference_scaled = mean_scaled + float(
+        _difference_in_units(np.asarray(origin), null, scale)
+    )
+    statistic = difference_scaled / standard_error_scaled
     pvalue = _t_pvalue(statistic, df, selected_alternative)
-    difference_interval = _t_confidence_interval(
+    interval = _t_confidence_interval(
         mean_scaled,
         standard_error_scaled,
         df,
         selected_alternative,
         level,
         scale,
+        origin,
     )
-    interval = (
-        difference_interval[0]
-        if math.isinf(difference_interval[0])
-        else null + difference_interval[0],
-        difference_interval[1]
-        if math.isinf(difference_interval[1])
-        else null + difference_interval[1],
-    )
-    estimate = _stable_mean(values)
+    estimate = _rescale_shift(mean_scaled, scale, origin)
 
     return HypothesisTestResult(
         statistic=statistic,
@@ -607,10 +693,35 @@ def _feature_scaled_anchored_groups(
         tuple(np.max(np.abs(group), axis=0) for group in shifted)
     )
     feature_scale[feature_scale == 0.0] = 1.0
-    scaled = tuple(group / feature_scale for group in shifted)
     with np.errstate(over="ignore", invalid="ignore"):
         raw_feature_scale = feature_scale * base_scale
+    # Keep the scale itself representable for callers that transform a null
+    # mean or prior. In an overflowing column the base scale already bounds
+    # the shifted observations by two, so the extra division is unnecessary.
+    overflow_scale = ~np.isfinite(raw_feature_scale)
+    feature_scale[overflow_scale] = 1.0
+    raw_feature_scale[overflow_scale] = base_scale[overflow_scale]
+    scaled = tuple(group / feature_scale for group in shifted)
     return scaled, raw_feature_scale
+
+
+def _one_sample_coordinates(
+    values: NDArray[np.float64],
+    null: NDArray[np.float64],
+    *,
+    featurewise: bool = False,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Separate the residual coordinate system from the null displacement."""
+    origin = np.min(values, axis=0)
+    scale: NDArray[np.float64] | float
+    if featurewise:
+        (scaled,), scale = _feature_scaled_anchored_groups((values,))
+    else:
+        scaled, scale = _scaled_centered_values(values, origin)
+    difference = np.mean(scaled, axis=0, dtype=np.float64) + _difference_in_units(
+        origin, null, scale
+    )
+    return scaled, difference
 
 
 def _null_mean(popmean: ArrayLike | None, feature_count: int) -> NDArray[np.float64]:
@@ -1005,11 +1116,7 @@ def hotelling_1samp(
         if null.size != p:
             raise ValueError("popmean must contain one value per feature")
 
-    (scaled_values, scaled_null), _ = _feature_scaled_anchored_groups(
-        (values, null[None, :])
-    )
-    scaled = scaled_values - scaled_null
-    difference_scaled = np.mean(scaled, axis=0, dtype=np.float64)
+    scaled, difference_scaled = _one_sample_coordinates(values, null, featurewise=True)
     quadratic = _hotelling_quadratic(
         difference_scaled, scaled, name="the covariance estimate"
     )
@@ -1128,8 +1235,7 @@ def dempster_1samp(
     values = validate_2d_sample(x, name="x", minimum_rows=3)
     sample_size, feature_count = values.shape
     null = _null_mean(popmean, feature_count)
-    scaled, _ = _scaled_centered_values(values, null)
-    difference = np.mean(scaled, axis=0, dtype=np.float64)
+    scaled, difference = _one_sample_coordinates(values, null)
     trace, trace_squared = _covariance_trace_moments(scaled)
     trace = _require_positive(trace, name="covariance trace")
     statistic = sample_size * float(np.dot(difference, difference)) / trace
@@ -1226,8 +1332,7 @@ def bs_1samp(x: ArrayLike, *, popmean: ArrayLike | None = None) -> HypothesisTes
     values = validate_2d_sample(x, name="x", minimum_rows=3)
     sample_size, feature_count = values.shape
     null = _null_mean(popmean, feature_count)
-    scaled, _ = _scaled_centered_values(values, null)
-    difference = np.mean(scaled, axis=0)
+    scaled, difference = _one_sample_coordinates(values, null)
     trace, trace_squared = _covariance_trace_moments(scaled)
     statistic = _bs_standardized_statistic(
         difference,
@@ -1309,13 +1414,10 @@ def sd_1samp(x: ArrayLike, *, popmean: ArrayLike | None = None) -> HypothesisTes
     # of units in every feature.  Apply that invariance before forming sample
     # variances so a valid small-scale feature is not rounded to zero merely
     # because another column is close to the top of the float64 range.
-    (scaled_values, scaled_null), _ = _feature_scaled_anchored_groups(
-        (values, null[None, :])
-    )
-    scaled = scaled_values - scaled_null
+    scaled, difference = _one_sample_coordinates(values, null, featurewise=True)
     diagonal, trace_r2 = _pooled_diagonal_and_correlation_trace_square((scaled,))
     statistic = _sd_standardized_statistic(
-        np.mean(scaled, axis=0),
+        difference,
         diagonal=diagonal,
         trace_r2=trace_r2,
         mean_multiplier=float(sample_size),
@@ -1837,7 +1939,10 @@ def zx_ksamp(
         choices=("bai-saranadasa", "hotelling"),
     )
     groups = _multivariate_groups(samples)
-    scaled, _ = _globally_scaled_anchored_groups(groups)
+    if selected == "hotelling":
+        scaled, _ = _feature_scaled_anchored_groups(groups)
+    else:
+        scaled, _ = _globally_scaled_anchored_groups(groups)
     transformed = _zx_transformed_sample(scaled)
     if selected == "bai-saranadasa":
         base = bs_1samp(transformed)
@@ -2465,19 +2570,16 @@ def maximum_pairwise_bayes_factor_2samp(
             ("gamma source", gamma_source),
         )
     prior_data_scale = math.sqrt(prior_scale) if prior_scale > 0.0 else 0.0
-    # When ``a0=b0=0`` the Bayes factor is exactly invariant to a common
-    # positive change of units.  Do not clamp the working scale to one: doing
-    # so would square subnormal observations directly and could turn a
-    # nonconstant feature into an artificial zero-variance boundary.
-    (first_scaled, second_scaled), scale = _globally_scaled_anchored_groups(
-        (first, second), extra_scale=prior_data_scale
-    )
-    scaled_prior = (prior_scale / scale) / scale
     log_shrinkage = log_gamma - math.log1p(shrinkage)
     log_factors = np.empty(feature_count, dtype=np.float64)
     for column in range(feature_count):
-        first_values = first_scaled[:, column]
-        second_values = second_scaled[:, column]
+        # Each component has its own variance ratio and change of units.
+        # Including the prior in this column's scale also preserves the
+        # optional inverse-gamma extension when columns have different units.
+        (first_values, second_values), scale = _globally_scaled_anchored_groups(
+            (first[:, column], second[:, column]), extra_scale=prior_data_scale
+        )
+        scaled_prior = (prior_scale / scale) / scale
         combined = np.concatenate((first_values, second_values))
         numerator = 2.0 * scaled_prior + total_size * _lyl_centered_variance(combined)
         denominator = (

@@ -11,15 +11,23 @@ null simulations are the correctness oracles.
 
 Except for the paper-specific Lee--You--Lin known-zero-mean model, each group
 has a feature-wise anchor removed in the original coordinates before centering
-and division by one common finite scale. An opposite-sign overflow fallback
-performs the subtraction in normalized coordinates. Covariance products are
-therefore evaluated without avoidable overflow, while standardized statistics
-remain unchanged. Tests cover separately shifted locations as large as
+and numerical scaling. An opposite-sign overflow fallback performs the
+subtraction in normalized coordinates. Most procedures use one common scalar
+scale. CLX and Schott (2001), whose statistics permit independent changes of
+feature units, use a common power-of-two scale for each feature across groups.
+This also protects small coordinates from underflow in covariance products.
+Tests cover separately shifted locations as large as
 $10^{14}$ while preserving exactly representable within-group variation,
 common scales through $10^{100}$, group exchange, group order, and feature
 permutation where the method implies those invariances. Undefined zero
 variance estimates and singular matrices are rejected before a p-value is
 formed.
+
+Supplied null covariance matrices are checked after diagonal equilibration
+to correlation units. Numerical positive definiteness requires the smallest
+eigenvalue to exceed $p\epsilon\max_j|\lambda_j|$, where $\epsilon$ is
+float64 machine precision. A zero eigenvalue rounded slightly positive is
+therefore rejected, while disparate marginal units alone do not cause rejection.
 
 ## Fisher one-sample test (withheld)
 
@@ -273,11 +281,22 @@ $$
 with the published type-I extreme-value survival probability. The tail is
 evaluated with `expm1` and a log rate, avoiding cancellation near zero. A
 literal double-loop fixture and all group, location, scale, and feature-order
-invariances pass. The implementation evaluates the literal centered-product
+invariances pass. Common rescaling of feature $j$ by $s_j$ multiplies the
+numerator and denominator of entry $(i,j)$ by the same $s_i^2s_j^2$.
+The implementation therefore equilibrates each feature independently before
+forming its fourth-order products. Exact-input Decimal references cover feature
+units from $10^{-250}$ to $10^{250}$, including cases where global scaling
+previously changed the statistic or rounded a positive variance estimate to zero.
+The implementation evaluates the literal centered-product
 squares in bounded feature blocks. This avoids both cancellation in the
 algebraic fourth-moment subtraction and an unbounded
 $O((n_1+n_2)p^2)$ product tensor; working storage is
-$O(n_1p+n_2p+p^2)$ plus a fixed-size block. Fresh 20,000-run public-call normal-null streams at
+$O(n_1p+n_2p+p^2)$ plus a fixed-size block. When covariance subtraction or
+nearly deterministic centered products make rounding material to an entry's
+ratio, that entry is recomputed with 80-digit Decimal arithmetic from the
+original input floats. An independent 90-digit reference verifies this path;
+identical observation multisets avoid unnecessary high-precision work.
+Fresh 20,000-run public-call normal-null streams at
 $(n_1,n_2,p)=(100,100,30)$ produced counts `(163, 994, 2037)` and rates
 `(0.00815, 0.04970, 0.10185)` for seed 20260831, and counts
 `(176, 958, 2044)` and rates `(0.00880, 0.04790, 0.10220)` for seed 20260901.

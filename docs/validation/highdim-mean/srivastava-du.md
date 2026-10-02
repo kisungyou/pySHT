@@ -23,9 +23,12 @@ path does not construct a dense $p\times p$ covariance or correlation matrix,
 and the tall low-dimensional path does not construct a dense row Gram. A
 5,000-feature allocation guard verifies the former storage contract.
 
-Null vectors are removed before scaling and two groups use one deterministic
-feature-wise anchor. Regressions at common locations `1e8` and `1e14` compare
-against the information still representable in the translated float64 input.
+One-sample residuals use an observation-based feature-wise anchor and scale;
+the null displacement is evaluated separately. Two groups use one shared
+deterministic feature-wise anchor. Regressions at common locations `1e8` and
+`1e14` compare against the information still representable in the translated
+float64 input, and distant-null fixtures independently check the diagonal and
+correlation corrections.
 
 ## Null calibration gate
 

@@ -206,12 +206,13 @@ def _monte_carlo_exceedances(
     remaining = n_resamples
     exceedances = 0
     batch_size = max(1, _MONTE_CARLO_BATCH_VALUES // sample_size)
+    threshold = upper_tail_threshold(observed)
     while remaining:
         current = min(remaining, batch_size)
         samples = generator.standard_normal((current, sample_size))
         standardized = _standardize_rows(samples)
         simulated = row_statistic(standardized)
-        exceedances += int(np.count_nonzero(simulated >= observed))
+        exceedances += int(np.count_nonzero(simulated >= threshold))
         remaining -= current
     return exceedances
 

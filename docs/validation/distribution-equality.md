@@ -122,11 +122,31 @@ fails before calculation if that number exceeds `n_resamples`.
 the conditional MCSE and 95% Clopper--Pearson tail-probability interval;
 exact results use $b/B$.
 
-Coordinates are centered at an overflow-safe per-feature midpoint, divided by
-a common positive scale, and distances are divided by their maximum. Energy
-inference is invariant to this scaling. Median-bandwidth MMD is also scale
-invariant; explicit bandwidths retain their original data units through a
-log-ratio calculation. A metric-only canonical form incorporates both the
+Pairwise coordinate differences are formed before distance normalization,
+preserving local spacings even near a distant outlier. Norms avoid premature
+squaring, and overflowing distances are retained logarithmically. Energy
+inference uses distances divided by their maximum and is invariant to this
+scaling. Kernels use the log distances directly so explicit bandwidths retain
+their data units even when distance ratios underflow. Median bandwidths are
+also evaluated without overflowing their central-pair average. When all
+entries are near one, MMD uses `expm1` kernel offsets: the additive constant
+cancels in the unbiased statistic. Otherwise it retains unshifted kernels
+to preserve tiny off-diagonal values. Self pairs are excluded before summation
+to prevent the unit diagonal from erasing those contributions.
+
+MMD and DISCO use the same contiguous unordered-pair reduction for observed
+and simulated labels, independent of resampling batch size. For DISCO,
+$F=A(T/W-1)$ with $A=(N-K)/(K-1)$ and positive total and within dispersions
+$T,W$. Subtraction can leave roundoff proportional to $A$ even when the true
+statistic is close to zero. Its comparisons therefore include a method-specific
+forward-error allowance proportional to $A+\max(|F_{obs}|,|F_{sim}|)$; the
+coefficient accounts for pairwise-sum depth, coordinate norms, and ratio
+arithmetic. Kernel comparisons retain only their relative tolerance. Exact
+empirical equality is identified through integer multiplicities and has zero
+DISCO dispersion. A near-equality one-dimensional regression uses an
+independent high-precision enumeration of all allocations to verify ties.
+
+A metric-only canonical form incorporates both the
 pooled distance graph and the unlabeled group partition. Stable distance ranks,
 colour refinement, and individualization attempt to resolve symmetric
 geometries within a fixed work budget. Each refinement pass and twin comparison

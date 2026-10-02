@@ -26,10 +26,13 @@ or go directly to the [API reference](api/index.md).
 ::::
 
 ::::{div} home-status
-**Release candidate 0.5.0rc1.**
-Version 0.1.0 remains the latest stable release. This candidate integrates the
-validated 0.2--0.5 expansion; methods that did not pass their scientific
-release gate remain private or absent.
+**Development documentation.**
+This website follows the `master` branch and includes unreleased numerical
+corrections beyond the 0.5.0rc1 candidate. Version 0.1.0 remains the latest
+stable release; 0.5.0rc1 is still a draft candidate. The development API
+integrates the validated 0.2--0.5 expansion. Methods that did not pass their
+scientific release gate remain private or absent. See the
+[Unreleased changelog](project/changelog.md) for the current corrections.
 ::::
 
 ## Contents
@@ -59,7 +62,7 @@ release gate remain private or absent.
 - **[12] Circular Data** — [API](api/circular.md)
 
 Categories `[0]`--`[10]` preserve SHT 0.1.9's numbering and scientific
-organization. The candidate API has 72 canonical functions: 51 SHT
+organization. The development API has 72 canonical functions: 51 SHT
 compatibility functions covering 52 of 54 statistical routine identities and
 21 independently cataloged pySHT-native methods. The
 [migration crosswalk](migration/from-r.md) explains the one shared

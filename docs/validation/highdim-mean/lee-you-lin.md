@@ -31,8 +31,15 @@ result diagnostics and documentation, not attributed to Equation (4).
 Scaling `b0` by the square of the data scale preserves the result.
 
 The two samples use a shared deterministic feature-wise anchor before
-working-scale selection. This preserves group exchange and translation
-invariance at large common locations without changing the log Bayes factors.
+working-scale selection. Each component receives its own scale, including
+the optional prior scale, so small features are not erased by large units in
+another column. This preserves group exchange and translation invariance at
+large common locations. Under the default `a0=b0=0` prior, independently
+changing feature units leaves every component log Bayes factor unchanged;
+high-precision residual-sum references test scales from $10^{-200}$ to
+$10^{200}$. With nonzero `b0`, changing data units also requires the
+corresponding prior change; the scalar `b0` parameter cannot encode a
+different prior scale for each feature.
 
 ## Targeted alternative-evidence gate
 

@@ -141,18 +141,11 @@ Directly subtracting coordinates near the extremes of float64 can overflow,
 while squaring very small distance contrasts can underflow. The implementation
 therefore performs calibration on a dimensionless distance matrix.
 
-For each feature, the pooled coordinates are first centered at the
-overflow-safe midpoint
-
-$$
-c_j=\frac{\min_i z_{ij}}2+\frac{\max_i z_{ij}}2.
-$$
-
-The centered coordinates are divided by their largest absolute value (unless
-all are zero). Centering first is essential when observations differ by only
-a few representable units around a huge common location: scaling the raw
-coordinates first can round those differences away. Euclidean distances are
-then evaluated and divided by their largest value. Conceptually, if
+Euclidean distances are computed from direct pairwise differences with
+scaled norm accumulation, preserving small local spacings in the presence of
+a distant observation. If a difference or norm overflows, half-coordinate
+subtraction and logarithmic scaling retain the finite normalized distances.
+All distances are divided by their largest value. Conceptually, if
 $d_{\max}$ is the largest pooled pairwise distance, calibration uses
 
 $$

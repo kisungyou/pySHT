@@ -124,6 +124,11 @@ result.
   independent two-sample version requires sufficient pooled residual degrees
   of freedom. Every covariance matrix used in a quadratic solve must be
   positive definite.
+- Positive definiteness and full rank must be distinguishable from numerical
+  roundoff after accounting for feature units. A mathematically positive but
+  nearly singular covariance can therefore be rejected. A change of units
+  alone does not establish a rank defect; a column that is a linear
+  combination of other columns does.
 - Trace and U-statistic estimators can require three or four observations per
   group even though their target matrices need not be invertible.
 - Projection procedures still require positive projected variances; increasing
@@ -148,6 +153,14 @@ logarithmic arithmetic to avoid unnecessary `float64` overflow and underflow.
 These transformations preserve the intended statistic or its ordering. They
 do not make an invalid sampling model valid, repair influential outliers, or
 establish normality, sparsity, or exchangeability.
+
+One-sample mean procedures estimate residual variation from the observations
+independently of the hypothesized mean. Changing that null changes the tested
+mean difference, not the sample variance or a t interval for the population
+mean. At the limits of numerical range, a displayed statistic may still be
+zero or infinite while a separately evaluated tail or resampling score
+retains information. Inspect the reported p-value rather than reconstructing
+it from the displayed statistic.
 
 The mathematical invariances differ by test. A mean test may be translation
 equivariant, a covariance-equality test may permit common scaling, and a test

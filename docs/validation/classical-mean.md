@@ -25,9 +25,19 @@ one-sample test of the row-wise differences. P-values use the requested lower,
 upper, or doubled symmetric t tail. Confidence intervals use the same degrees
 of freedom and alternative.
 
-The calculations use a common positive scale before forming means and
-standard deviations. This leaves the t statistic unchanged and prevents
-avoidable overflow for data near the limits of float64.
+The calculations subtract a sample anchor before applying a positive scale
+and forming residual variation. The one-sample null displacement is evaluated
+separately, so a distant hypothesized mean cannot erase the sample variance.
+Confidence bounds are reconstructed around the sample estimate, without
+subtracting and then adding the null mean. These operations leave the t
+statistic unchanged and prevent avoidable overflow or cancellation.
+
+Quantile evaluation uses the smaller tail directly for one-sided intervals.
+For tiny two-sided confidence coefficients, the central t probability is
+inverted directly, with its local expansion near zero. Thus subtraction from
+one cannot turn a small positive coefficient into a spurious zero-width or
+infinite interval. Cauchy and two-degree-of-freedom closed forms independently
+check these endpoints, including supported dependency versions.
 
 Validation evidence:
 
@@ -38,6 +48,8 @@ Validation evidence:
   other has positive variance;
 - common scaling through approximately $10^{200}$ preserves the statistic
   and p-value;
+- distant nulls up to $10^{20}$ preserve the sample variance and the
+  null-independent t confidence interval;
 - zero standard error, non-finite values, undersized samples, and inconsistent
   paired designs fail explicitly.
 
@@ -87,6 +99,11 @@ formation; Hotelling's statistic is invariant to this nonsingular diagonal
 transformation. The implementation requires the sample-size conditions for
 positive denominator degrees of freedom and a positive-definite covariance
 estimate.
+
+The one-sample covariance is formed in observation-anchored coordinates,
+separately from the null displacement. Observation-space numerical rank
+checks precede the quadratic solve, so a rounded positive Gram eigenvalue
+cannot by itself validate a linearly dependent sample.
 
 Validation evidence:
 

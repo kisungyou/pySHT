@@ -33,9 +33,14 @@ The primary source is [Ebner, Henze, and Yukich
 
 ## Numerical and calibration policy
 
-The sum is evaluated in the log domain; coincident observations and extreme
-positive powers therefore have explicit zero/infinite-statistic behavior
-without intermediate overflow. Bounds are fixed, finite, and not estimated.
+Distances use scaled Euclidean norms rather than squaring tiny separations
+directly. The sum is evaluated in the log domain. Calibration compares
+$\log T/\max(1,\alpha)$, a strictly increasing transformation for the fixed
+chosen power, with the largest log-volume removed before exponentiation.
+This preserves ordering even when multiplying a log-volume by an extreme
+finite power would overflow. Coincident observations and values outside the
+display range retain explicit zero/infinite-statistic behavior. Bounds are
+fixed, finite, and not estimated.
 Monte Carlo replicates are iid uniform matrices on the standardized cube; no
 nuisance parameter is refitted. A public call consumes $nmB$ uniform variates
 from its isolated generator after evaluating the data. Ties enter the selected
@@ -44,6 +49,9 @@ tail and $p=(b+1)/(B+1)$.
 Literal first-$J$ loops, one-dimensional fixtures, row/feature permutations,
 per-coordinate affine maps, duplicates, tail direction, seeded replay, and a
 9,999-draw performance test cover the implementation.
+Additional references verify a representable distance of $10^{-200}$ and
+the exact pair-spacing ordering for $n=2$, $J=1$, including powers near the
+largest finite float64 value.
 
 ## Complexity
 

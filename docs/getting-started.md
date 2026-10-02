@@ -14,13 +14,23 @@ currently 0.1.0, from PyPI:
 python -m pip install pysht
 ```
 
-This documentation describes release candidate 0.5.0rc1.
-To test the candidate from its source checkout, a C++17 compiler
-and CMake are also required:
+This website follows the `master` branch, including unreleased numerical
+corrections beyond the draft 0.5.0rc1 candidate. Installing the stable release
+does not provide all methods and corrections described here. See the
+[changelog](project/changelog.md) for the distinction.
+
+To use the development version, clone the repository and install from its
+current source checkout. A C++17 compiler and CMake are also required:
 
 ```console
+git clone https://github.com/kisungyou/pySHT.git
+cd pySHT
 python -m pip install -e ".[test]"
 ```
+
+Record the checkout's commit hash alongside the package version when
+reproducing a development result; the candidate version string alone does
+not identify these unreleased changes.
 
 ## Run a first test
 

@@ -1,7 +1,9 @@
 # Roadmap
 
-pySHT 0.5.0rc1 is a release candidate for 0.5.0;
-0.1.0 remains the latest stable release. The candidate combines the
+pySHT 0.5.0rc1 is a draft release candidate for 0.5.0;
+0.1.0 remains the latest stable release. This website follows `master`,
+including the correctness changes listed under
+[Unreleased](changelog.md). The candidate combines the
 0.2--0.5 expansion while preserving the validated SHT compatibility core.
 Its 72-function public API is fixed during 0.5 stabilization, except for
 documented correctness fixes. New methods belong to later releases.

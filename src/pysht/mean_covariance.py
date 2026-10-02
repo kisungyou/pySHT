@@ -14,6 +14,11 @@ from ._validation import (
     validate_2d_sample,
     validate_covariance_matrix,
 )
+from .mean import (
+    _difference_in_units,
+    _feature_scaled_anchored_groups,
+    _residual_svd,
+)
 
 __all__ = ["hn_2samp", "llzs_1samp", "lrt_1samp"]
 
@@ -105,15 +110,6 @@ def _whiten_against_null(
     if not np.all(np.isfinite(whitened)):
         raise ValueError("the observations cannot be represented on the null scale")
     return np.asarray(whitened, dtype=np.float64, order="C")
-
-
-def _mle_mean_covariance(
-    values: NDArray[np.float64],
-) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    mean = np.mean(values, axis=0, dtype=np.float64)
-    centered = values - mean
-    covariance = centered.T @ centered / values.shape[0]
-    return mean, covariance
 
 
 def llzs_1samp(
@@ -221,80 +217,71 @@ def lrt_1samp(
     more observations than features and full centered column rank.
     """
     values = validate_2d_sample(x, name="x")
-    standardized = _whiten_against_null(values, popmean, popcov)
-    n, p = standardized.shape
+    n, p = values.shape
     if n <= p:
         raise ValueError("lrt_1samp requires more observations than features")
+    null_mean = _null_mean(popmean, p)
+    null_covariance = _null_covariance(popcov, p)
 
-    with np.errstate(over="ignore", invalid="ignore"):
-        mean, covariance = _mle_mean_covariance(standardized)
-    eigenvalues: NDArray[np.float64] | None
-    if np.all(np.isfinite(covariance)):
-        try:
-            eigenvalues = np.linalg.eigvalsh(covariance)
-        except np.linalg.LinAlgError:
-            eigenvalues = None
-    else:
-        eigenvalues = None
+    # Estimate residual variation without including the hypothesized mean in
+    # its coordinates. A distant null must not round distinct rows together.
+    (scaled,), scales = _feature_scaled_anchored_groups((values,))
+    mean_scaled = np.mean(scaled, axis=0, dtype=np.float64)
+    centered = scaled - mean_scaled
+    _, singular_values, _, residual_scales = _residual_svd(
+        centered, name="the maximum-likelihood covariance"
+    )
+    # Rank is checked on observations, not their Gram matrix (which squares
+    # the condition number and can give a spurious positive zero eigenvalue).
+    log_sample_determinant = math.fsum(
+        [2.0 * math.log(float(v)) for v in singular_values]
+        + [2.0 * math.log(float(v)) for v in residual_scales]
+        + [2.0 * math.log(float(v)) for v in scales]
+        + [-p * math.log(n)]
+    )
 
-    if (
-        eigenvalues is not None
-        and np.all(np.isfinite(eigenvalues))
-        and np.all(eigenvalues > 0.0)
-    ):
-        eigenvalue_errors = eigenvalues - 1.0
-        log_eigenvalues = np.log(eigenvalues)
-        near_identity = np.abs(eigenvalue_errors) < 0.5
-        log_eigenvalues[near_identity] = np.log1p(eigenvalue_errors[near_identity])
-        with np.errstate(over="ignore", invalid="ignore"):
-            divergence = float(
-                np.sum(eigenvalue_errors - log_eigenvalues) + np.dot(mean, mean)
-            )
-    else:
-        # A single global scale can erase valid variation in columns whose
-        # units differ by hundreds of orders of magnitude.  Normalize every
-        # column before checking rank, then restore the quadratic and
-        # log-determinant terms analytically.
-        magnitudes = np.max(np.abs(standardized), axis=0)
-        if np.any(magnitudes <= 0.0) or not np.all(np.isfinite(magnitudes)):
-            raise ValueError("the standardized observations are numerically singular")
-        scaled = standardized / magnitudes
-        scaled_mean, scaled_covariance = _mle_mean_covariance(scaled)
-        try:
-            scaled_eigenvalues = np.linalg.eigvalsh(scaled_covariance)
-        except np.linalg.LinAlgError as exc:
-            raise ValueError(
-                "the maximum-likelihood covariance could not be diagonalized"
-            ) from exc
-        if np.any(scaled_eigenvalues <= 0.0) or not np.all(
-            np.isfinite(scaled_eigenvalues)
-        ):
-            raise ValueError(
-                "the maximum-likelihood covariance must be positive definite"
-            )
-        quadratic_coefficients = np.diag(scaled_covariance) + scaled_mean * scaled_mean
-        if np.any(quadratic_coefficients <= 0.0) or not np.all(
-            np.isfinite(quadratic_coefficients)
-        ):
-            raise ValueError("the likelihood-ratio quadratic term is invalid")
-        log_quadratic = float(
-            np.logaddexp.reduce(
-                2.0 * np.log(magnitudes) + np.log(quadratic_coefficients)
-            )
+    # Equilibrate the null separately: whitening must retain features with
+    # different units, while the log determinant remains available even when
+    # an individual sample variance is outside the floating-point range.
+    null_scales = np.sqrt(np.diag(null_covariance))
+    correlation = (null_covariance / null_scales[:, None]) / null_scales[None, :]
+    try:
+        factor = np.linalg.cholesky(correlation)
+    except np.linalg.LinAlgError as exc:
+        raise ValueError("popcov must be positive definite") from exc
+    log_null_determinant = math.fsum(
+        [2.0 * math.log(float(v)) for v in null_scales]
+        + [2.0 * math.log(float(v)) for v in np.diag(factor)]
+    )
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        relative_scales = scales / null_scales
+        residuals = centered * relative_scales
+        origin_difference = _difference_in_units(
+            np.min(values, axis=0), null_mean, null_scales
         )
-        if log_quadratic > _LOG_FLOAT_MAX:
+        mean_difference = origin_difference + mean_scaled * relative_scales
+    if not np.all(np.isfinite(residuals)) or not np.all(np.isfinite(mean_difference)):
+        divergence = math.inf
+    else:
+        whitened = np.linalg.solve(factor, residuals.T).T / math.sqrt(n)
+        whitened_mean = np.linalg.solve(factor, mean_difference)
+        with np.errstate(over="ignore", invalid="ignore"):
+            trace = float(np.sum(whitened * whitened))
+            mean_square = float(np.dot(whitened_mean, whitened_mean))
+        if not math.isfinite(trace) or not math.isfinite(mean_square):
             divergence = math.inf
         else:
-            quadratic = (
-                0.0 if log_quadratic < _LOG_SMALLEST else math.exp(log_quadratic)
+            covariance_divergence = math.fsum(
+                (trace, -log_sample_determinant, log_null_determinant, -float(p))
             )
-            log_determinant = math.fsum(
-                (
-                    *(float(np.log(value)) for value in scaled_eigenvalues),
-                    *(2.0 * math.log(float(value)) for value in magnitudes),
-                )
-            )
-            divergence = quadratic - log_determinant - p
+            # Near the null, retain the second-order covariance departure
+            # instead of subtracting almost equal trace and log determinant.
+            if 0.5 * p <= trace <= 1.5 * p:
+                eigenvalues = np.linalg.eigvalsh(whitened.T @ whitened)
+                if np.all((eigenvalues > 0.5) & (eigenvalues < 1.5)):
+                    errors = eigenvalues - 1.0
+                    covariance_divergence = float(np.sum(errors - np.log1p(errors)))
+            divergence = max(0.0, covariance_divergence) + mean_square
     statistic = math.inf if not math.isfinite(divergence) else max(0.0, n * divergence)
     degrees_of_freedom = 0.5 * p * (p + 3)
     pvalue = float(stats.chi2.sf(statistic, degrees_of_freedom))

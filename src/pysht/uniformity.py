@@ -10,7 +10,7 @@ from numpy.typing import ArrayLike, NDArray
 from scipy import integrate, special, stats
 from scipy.spatial import distance
 
-from ._resampling import monte_carlo_calibration
+from ._resampling import monte_carlo_calibration, upper_tail_threshold
 from ._results import HypothesisTestResult, ResamplingTestResult
 from ._validation import (
     make_generator,
@@ -258,40 +258,49 @@ def _interpoint_monte_carlo_exceedances(
             dimension=dimension,
         )
         simulated = _select_interpoint_statistic(q1, q2, selected)
-        exceedances += int(np.count_nonzero(simulated >= observed))
+        exceedances += int(
+            np.count_nonzero(simulated >= upper_tail_threshold(observed))
+        )
         remaining -= current
     return exceedances
+
+
+def _scaled_log_power_sum(log_volumes: NDArray[np.float64], alpha: float) -> float:
+    """Compute log(sum(exp(alpha*v)))/max(1,alpha) without positive overflow."""
+    maximum = float(np.max(log_volumes))
+    if maximum == -math.inf:
+        return -math.inf
+    # All shifted arguments are nonpositive. Overflow can only produce -inf,
+    # the correct limiting contribution of a negligible neighbor volume.
+    with np.errstate(over="ignore"):
+        shifted = alpha * (log_volumes - maximum)
+    divisor = max(1.0, alpha)
+    return (alpha / divisor) * maximum + float(
+        special.logsumexp(np.sort(shifted, axis=None))
+    ) / divisor
 
 
 def _ehy_log_statistic(
     values: NDArray[np.float64], *, alpha: float, n_neighbors: int
 ) -> float:
-    """Return log of the Ebner--Henze--Yukich volume-score statistic."""
+    """Return the log statistic divided by max(1,alpha) for calibration."""
     sample_size, dimension = values.shape
     differences = values[:, None, :] - values[None, :, :]
     # Sort the nonnegative coordinate contributions before reduction.  This
     # makes a fixed Monte Carlo stream exactly reproducible after a common
     # feature permutation, not merely equal up to a last-bit summation change.
-    np.square(differences, out=differences)
+    np.abs(differences, out=differences)
     differences.sort(axis=2)
-    squared_distances = np.sum(
-        differences,
-        axis=2,
-        dtype=np.float64,
-    )
-    np.fill_diagonal(squared_distances, math.inf)
-    nearest_squared = np.partition(squared_distances, n_neighbors - 1, axis=1)[
-        :, :n_neighbors
-    ]
+    distances = np.hypot.reduce(differences, axis=2)
+    np.fill_diagonal(distances, math.inf)
+    nearest = np.partition(distances, n_neighbors - 1, axis=1)[:, :n_neighbors]
     with np.errstate(divide="ignore", invalid="ignore"):
-        log_radius = 0.5 * np.log(nearest_squared)
+        log_radius = np.log(nearest)
     log_unit_ball_volume = 0.5 * dimension * math.log(math.pi) - float(
         special.gammaln(0.5 * dimension + 1.0)
     )
-    log_scores = alpha * (
-        log_unit_ball_volume + math.log(sample_size) + dimension * log_radius
-    )
-    return float(special.logsumexp(np.sort(log_scores, axis=None)))
+    log_volumes = log_unit_ball_volume + math.log(sample_size) + dimension * log_radius
+    return _scaled_log_power_sum(log_volumes, alpha)
 
 
 def _from_log_nonnegative(log_value: float) -> float:
@@ -376,7 +385,7 @@ def ehy(
         )
     pvalue, standard_error, interval = monte_carlo_calibration(exceedances, resamples)
     return ResamplingTestResult(
-        statistic=_from_log_nonnegative(observed_log),
+        statistic=_from_log_nonnegative(observed_log * max(1.0, power)),
         pvalue=pvalue,
         method=(
             "Ebner-Henze-Yukich nearest-neighbor test for rectangular uniformity (2018)"

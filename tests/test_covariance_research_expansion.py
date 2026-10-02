@@ -13,6 +13,14 @@ from pysht import covariance
 from pysht.covariance import czz_identity_1samp, czz_sphericity_1samp
 
 
+@pytest.mark.parametrize("function", [czz_identity_1samp, covariance.wl_1samp])
+def test_singular_null_covariance_cannot_be_whitened(function: object) -> None:
+    values = np.random.default_rng(12).normal(size=(30, 3))
+    covariance_null = np.array([[17, 4, 15], [4, 1, 4], [15, 4, 17]])
+    with pytest.raises(ValueError, match="positive definite"):
+        function(values, popcov=covariance_null)  # type: ignore[operator]
+
+
 def _literal_trace_square(values: NDArray[np.float64]) -> float:
     n = len(values)
     first = second = third = 0.0

@@ -13,7 +13,7 @@ from collections.abc import Callable
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
-from scipy import special, stats
+from scipy import optimize, special, stats
 
 from ._results import HypothesisTestResult
 from ._validation import (
@@ -35,7 +35,6 @@ __all__ = [
 
 
 _LOG_FLOAT_MAX = math.log(float(np.finfo(np.float64).max))
-_LOG_FLOAT_MIN = math.log(float(np.nextafter(0.0, 1.0)))
 _LOG_EPSILON = math.log(float(np.finfo(np.float64).eps))
 _TAIL_REEVALUATION_THRESHOLD = float(np.finfo(np.float64).tiny)
 _TAIL_SERIES_LIMIT = 100_000
@@ -101,7 +100,7 @@ def _relative_variance_logs(
 
 def _exp_extended(log_value: float) -> float:
     """Exponentiate to binary64, returning the appropriate finite boundary."""
-    if log_value == -math.inf or log_value < _LOG_FLOAT_MIN:
+    if log_value == -math.inf:
         return 0.0
     if log_value > _LOG_FLOAT_MAX:
         return math.inf
@@ -374,18 +373,101 @@ def _confidence_interval(
     *,
     ppf: Callable[[float], float],
     isf: Callable[[float], float],
+    log_ppf: Callable[[float], float] | None = None,
+    log_isf: Callable[[float], float] | None = None,
 ) -> tuple[float, float]:
     """Invert a positive pivot to form a one- or two-sided interval."""
-    alpha = 1.0 - confidence_level
-    if alternative == "less":
-        return (0.0, _divide_log_quantity(log_estimate, float(ppf(alpha))))
-    if alternative == "greater":
-        lower = _divide_log_quantity(log_estimate, float(isf(alpha)))
-        return (lower, math.inf)
 
-    lower = _divide_log_quantity(log_estimate, float(isf(alpha / 2.0)))
-    upper = _divide_log_quantity(log_estimate, float(ppf(alpha / 2.0)))
+    def bound(probability: float, *, upper_quantile: bool) -> float:
+        logarithmic = log_isf if upper_quantile else log_ppf
+        if logarithmic is not None:
+            if log_estimate == -math.inf:
+                return 0.0
+            return _exp_extended(log_estimate - logarithmic(probability))
+        quantile = isf(probability) if upper_quantile else ppf(probability)
+        return _divide_log_quantity(log_estimate, float(quantile))
+
+    alpha = 1.0 - confidence_level
+    small_level = confidence_level <= 0.5
+    if alternative == "less":
+        probability = confidence_level if small_level else alpha
+        return (0.0, bound(probability, upper_quantile=small_level))
+    if alternative == "greater":
+        probability = confidence_level if small_level else alpha
+        return (bound(probability, upper_quantile=not small_level), math.inf)
+
+    lower = bound(alpha / 2.0, upper_quantile=True)
+    upper = bound(alpha / 2.0, upper_quantile=False)
     return (lower, upper)
+
+
+def _f_log_quantile(probability: float, first_df: float, second_df: float) -> float:
+    """Invert the F CDF, retaining quantiles outside floating-point range."""
+    if probability > 0.5:
+        return -_f_log_quantile(1.0 - probability, second_df, first_df)
+    if probability == 0.0:
+        return -math.inf
+    log_probability = math.log(probability)
+    argument = float(special.betaincinv(first_df / 2.0, second_df / 2.0, probability))
+    if 0.0 < argument < 1.0:
+        log_quantile = (
+            math.log(second_df)
+            - math.log(first_df)
+            + math.log(argument)
+            - math.log1p(-argument)
+        )
+        # Some supported inverse-beta implementations floor subnormal tails
+        # or their quantiles. Verify the inverse against the stable log CDF.
+        if abs(_f_log_tails(log_quantile, first_df, second_df)[0] - log_probability) < (
+            16.0 * np.finfo(np.float64).eps * max(1.0, abs(log_probability))
+        ):
+            return log_quantile
+
+    def objective(value: float) -> float:
+        return _f_log_tails(value, first_df, second_df)[0] - log_probability
+
+    lower, upper = -1.0, 1.0
+    while objective(lower) > 0.0:
+        lower = 2.0 * lower - 1.0
+    while objective(upper) < 0.0:
+        upper = 2.0 * upper + 1.0
+    return float(optimize.brentq(objective, lower, upper, xtol=1e-13, rtol=1e-15))
+
+
+def _chi_square_log_quantile(probability: float, df: float, *, upper: bool) -> float:
+    """Retain chi-square interval pivots that underflow during inversion."""
+    if probability > 0.5:
+        return _chi_square_log_quantile(1.0 - probability, df, upper=not upper)
+    quantile = float(
+        stats.chi2.isf(probability, df) if upper else stats.chi2.ppf(probability, df)
+    )
+    log_probability = math.log(probability)
+    tail_index = 1 if upper else 0
+    if 0.0 < quantile < math.inf:
+        candidate = math.log(quantile)
+        if abs(_chi_square_log_tails(candidate, df)[tail_index] - log_probability) < (
+            16.0 * np.finfo(np.float64).eps * max(1.0, abs(log_probability))
+        ):
+            return candidate
+
+    def objective(value: float) -> float:
+        difference = _chi_square_log_tails(value, df)[tail_index] - log_probability
+        return -difference if upper else difference
+
+    lower, upper_bound = -1.0, 1.0
+    while objective(lower) > 0.0:
+        lower = 2.0 * lower - 1.0
+    while objective(upper_bound) < 0.0:
+        upper_bound = 2.0 * upper_bound + 1.0
+    return float(optimize.brentq(objective, lower, upper_bound, xtol=1e-13, rtol=1e-15))
+
+
+def _f_quantile(probability: float, first_df: float, second_df: float) -> float:
+    return _exp_extended(_f_log_quantile(probability, first_df, second_df))
+
+
+def _f_upper_quantile(probability: float, first_df: float, second_df: float) -> float:
+    return _exp_extended(-_f_log_quantile(probability, second_df, first_df))
 
 
 def _available_estimates(
@@ -476,6 +558,12 @@ def chisquare_1samp(
         level,
         ppf=lambda probability: float(stats.chi2.ppf(probability, degrees_of_freedom)),
         isf=lambda probability: float(stats.chi2.isf(probability, degrees_of_freedom)),
+        log_ppf=lambda probability: _chi_square_log_quantile(
+            probability, degrees_of_freedom, upper=False
+        ),
+        log_isf=lambda probability: _chi_square_log_quantile(
+            probability, degrees_of_freedom, upper=True
+        ),
     )
     sample_variance = _exp_extended(log_sample_variance)
 
@@ -536,8 +624,10 @@ def f_2samp(
         log_ratio,
         selected_alternative,
         level,
-        ppf=lambda probability: float(stats.f.ppf(probability, first_df, second_df)),
-        isf=lambda probability: float(stats.f.isf(probability, first_df, second_df)),
+        ppf=lambda probability: _f_quantile(probability, first_df, second_df),
+        isf=lambda probability: _f_upper_quantile(probability, first_df, second_df),
+        log_ppf=lambda probability: _f_log_quantile(probability, first_df, second_df),
+        log_isf=lambda probability: -_f_log_quantile(probability, second_df, first_df),
     )
 
     first_variance = _exp_extended(log_first_variance)

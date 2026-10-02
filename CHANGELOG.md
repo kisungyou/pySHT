@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Corrected
+
+- Retained small joint mean/variance probabilities for large samples and
+  partially subnormal scale ratios; inverted extreme variance confidence
+  bounds in the log domain across supported SciPy versions.
+- Estimated one-sample residual variation independently of the null mean,
+  preserved mean-test confidence intervals, and corrected tiny confidence
+  coefficients.
+- Rejected numerically singular null covariances and exactly dependent joint
+  LRT samples using checks that account for feature units and numerical rank.
+- Preserved CLX, mean Bayes factors, and Zhang--Xu Hotelling inference across
+  disparate feature units.
+- Preserved local distances in the presence of extreme outliers, stabilized
+  small kernel statistics, and corrected resampling tie comparisons in
+  independence, moment-normality, and Yang--Modarres tests.
+- Stabilized concentrated Dirichlet fitting and EHY distance and volume scores
+  at extreme numerical ranges, with independent regression references.
+
 ## 0.5.0rc1 - 2026-09-25
 
 Release candidate for testing before 0.5.0.

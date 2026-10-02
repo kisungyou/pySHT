@@ -15,7 +15,6 @@ from typing import Final, Literal
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from . import _core
 from ._distance_kernel import (
     as_sample,
     calibrate_groups,
@@ -107,35 +106,14 @@ def _pooled_data_and_labels(
 def _pairwise_distances(
     values: NDArray[np.float64],
 ) -> tuple[NDArray[np.float64], float]:
-    """Compute normalized Euclidean distances and their original scale.
+    """Use pairwise subtraction before the common distance normalization.
 
-    The Biswas--Ghosh statistic is homogeneous of degree two in distance, so a
-    positive common scaling cannot affect its permutation ordering. Centering
-    at an overflow-safe per-feature midpoint *before* scaling preserves small,
-    representable spacings around a huge common location. Dividing again by
-    the largest resulting distance prevents squared contrasts from overflowing
-    or underflowing during calibration.
+    The Biswas--Ghosh statistic is homogeneous of degree two in distance, so
+    the common normalization preserves its permutation ordering. Individual
+    pair differences retain local spacings even in the presence of outliers.
     """
-    minimum = np.min(values, axis=0)
-    maximum = np.max(values, axis=0)
-    midpoint = minimum / 2.0 + maximum / 2.0
-    centered = values - midpoint
-    coordinate_scale = float(np.max(np.abs(centered)))
-    scaled_values = centered if coordinate_scale == 0.0 else centered / coordinate_scale
-    try:
-        distances = _core.pairwise_distances(scaled_values, scaled_values)
-    except OverflowError as exc:
-        raise ValueError(
-            "pairwise Euclidean distances overflowed; rescale the observations"
-        ) from exc
-    scaled_distance_max = float(np.max(distances))
-    if scaled_distance_max > 0.0:
-        distances /= scaled_distance_max
-    with np.errstate(over="ignore", under="ignore", invalid="ignore"):
-        distance_scale = float(
-            np.float64(coordinate_scale) * np.float64(scaled_distance_max)
-        )
-    return distances, distance_scale
+    geometry = distance_geometry(values)
+    return geometry.distances, geometry.scale
 
 
 def _restore_raw_statistic(normalized_statistic: float, distance_scale: float) -> float:
@@ -235,11 +213,11 @@ def bg_2samp(
     -----
     The permutation null requires exchangeability of the pooled observations.
     A fixed integer seed gives identical results after reordering rows or
-    swapping the two samples. Coordinates are first centered at an
-    overflow-safe per-feature midpoint, then coordinates and distances are
-    divided by positive common scales. This preserves representable spacings
-    around a huge common location, leaves the permutation ordering unchanged
-    in exact arithmetic, and prevents scale-dependent overflow and underflow.
+    swapping the two samples. Pairwise differences are formed before distances
+    are divided by their maximum. This preserves local spacings around both
+    huge common locations and distant outliers. Overflowing pairs use a
+    logarithmic distance representation; the common normalization leaves
+    permutation ordering unchanged in exact arithmetic.
     ``result.statistic`` remains the raw statistic from the paper;
     the dimensionless value and maximum-distance scale are retained as
     ``result.normalized_statistic`` and ``result.distance_scale``. The raw
@@ -350,43 +328,14 @@ def _energy_statistic(
     distances: NDArray[np.float64],
     groups: tuple[NDArray[np.intp], ...],
 ) -> float:
-    """Evaluate the DISCO pseudo-F statistic from a powered distance matrix."""
-    sizes = tuple(group.size for group in groups)
-    total_size = sum(sizes)
-    group_count = len(groups)
-    within_means = tuple(
-        float(np.mean(distances[np.ix_(group, group)], dtype=np.float64))
-        for group in groups
-    )
-    within = sum(
-        size * mean / 2.0 for size, mean in zip(sizes, within_means, strict=True)
-    )
-    between = 0.0
-    for first_index in range(group_count - 1):
-        for second_index in range(first_index + 1, group_count):
-            first = groups[first_index]
-            second = groups[second_index]
-            cross_mean = float(
-                np.mean(distances[np.ix_(first, second)], dtype=np.float64)
-            )
-            energy = (
-                2.0 * cross_mean
-                - within_means[first_index]
-                - within_means[second_index]
-            )
-            between += first.size * second.size * energy / (2.0 * total_size)
-    numerical_scale = max(within, abs(between), np.finfo(np.float64).tiny)
-    if (
-        between < 0.0
-        and abs(between) <= 500.0 * np.finfo(np.float64).eps * numerical_scale
-    ):
-        between = 0.0
-    if between < 0.0:
-        raise ValueError("the energy between-sample dispersion became negative")
-    if within == 0.0:
-        return 0.0 if between == 0.0 else math.inf
+    """Use identical pair reductions for observed and resampled DISCO."""
+    labels = np.empty((1, distances.shape[0]), dtype=np.intp)
+    for label, indices in enumerate(groups):
+        labels[0, indices] = label
     return float(
-        (between / (group_count - 1.0)) / (within / (total_size - group_count))
+        _energy_statistic_batch(
+            distances, labels, tuple(group.size for group in groups)
+        )[0]
     )
 
 
@@ -395,39 +344,35 @@ def _energy_statistic_batch(
     labels: NDArray[np.intp],
     sizes: tuple[int, ...],
 ) -> NDArray[np.float64]:
-    """Evaluate a batch of DISCO statistics without allocation-level loops."""
-    masks = tuple(labels == group for group in range(len(sizes)))
-    within_means = tuple(
-        np.einsum("bi,ij,bj->b", mask, distances, mask, optimize=True) / size**2
-        for mask, size in zip(masks, sizes, strict=True)
-    )
-    within = sum(
-        size * mean / 2.0 for size, mean in zip(sizes, within_means, strict=True)
-    )
+    """Evaluate DISCO from total and within dispersions with fixed sums."""
     total_size = sum(sizes)
-    between = np.zeros(labels.shape[0], dtype=np.float64)
-    for first in range(len(sizes) - 1):
-        for second in range(first + 1, len(sizes)):
-            cross = np.einsum(
-                "bi,ij,bj->b",
-                masks[first],
-                distances,
-                masks[second],
-                optimize=True,
-            ) / (sizes[first] * sizes[second])
-            energy = 2.0 * cross - within_means[first] - within_means[second]
-            between += sizes[first] * sizes[second] * energy / (2.0 * total_size)
-    numerical_scale = np.maximum.reduce(
-        (
-            within,
-            np.abs(between),
-            np.full_like(between, np.finfo(np.float64).tiny),
-        )
-    )
-    small_negative = (between < 0.0) & (
-        np.abs(between) <= 500.0 * np.finfo(np.float64).eps * numerical_scale
-    )
-    between[small_negative] = 0.0
+    left, right = np.triu_indices(total_size, k=1)
+    pairs = distances[left, right]
+    total = float(np.sum(pairs, dtype=np.float64)) / total_size
+    left_labels, right_labels = labels[:, left], labels[:, right]
+    inverse_sizes = 1.0 / np.asarray(sizes, dtype=np.float64)
+    weights = np.where(left_labels == right_labels, inverse_sizes[left_labels], 0.0)
+    within = np.sum(np.ascontiguousarray(weights * pairs), axis=1, dtype=np.float64)
+    between = total - within
+    numerical_scale = np.maximum(within, max(total, np.finfo(np.float64).tiny))
+    near_zero = np.abs(between) <= 500.0 * np.finfo(np.float64).eps * numerical_scale
+    # Exact empirical equality implies zero dispersion, even if rounding of
+    # the two positive sums would otherwise leave a small positive residue.
+    # Multiplicity comparisons use integer cross-products, never a tolerance
+    # that would erase a genuinely small difference between distributions.
+    if np.any(near_zero):
+        selected = labels[near_zero]
+        same_point = distances == 0.0
+        reference = np.sum((selected[:, None, :] == 0) & same_point[None, :, :], axis=2)
+        identical = np.ones(selected.shape[0], dtype=np.bool_)
+        for group in range(1, len(sizes)):
+            counts = np.sum(
+                (selected[:, None, :] == group) & same_point[None, :, :], axis=2
+            )
+            identical &= np.all(counts * sizes[0] == reference * sizes[group], axis=1)
+        indices = np.flatnonzero(near_zero)
+        between[indices[identical]] = 0.0
+    between[(between < 0.0) & near_zero] = 0.0
     if np.any(between < 0.0):
         raise ValueError("the energy between-sample dispersion became negative")
     result = np.empty_like(between)
@@ -491,6 +436,15 @@ def energy_ksamp(
     with np.errstate(under="ignore"):
         powered_distances = np.power(base_distances, power)
     observed = _energy_statistic(powered_distances, observed_groups)
+    # F=A*(T/W-1), A=(N-K)/(K-1). Subtracting positive dispersions T,W
+    # creates an absolute error proportional to A even when F is near zero.
+    # Pairwise summation has logarithmic reduction depth; coordinate norms,
+    # powers, weights, and the two compared ratios add bounded rounding steps.
+    # Kernel statistics retain the default purely relative comparison.
+    total_size = pooled.shape[0]
+    reduction_depth = math.ceil(math.log2(max(2, total_size * (total_size - 1) // 2)))
+    roundoff = 8.0 * np.finfo(np.float64).eps * (reduction_depth + feature_count + 4)
+    factor = (total_size - len(groups)) / (len(groups) - 1.0)
     summary = calibrate_groups(
         observed=observed,
         statistic=lambda allocation: _energy_statistic(powered_distances, allocation),
@@ -503,6 +457,8 @@ def energy_ksamp(
         calibration=calibration,
         n_resamples=n_resamples,
         rng=rng,
+        absolute_tolerance=roundoff * factor,
+        relative_tolerance=max(_PERMUTATION_TIE_RTOL, roundoff),
     )
     return ResamplingTestResult(
         statistic=observed,
@@ -528,17 +484,12 @@ def _mmd_unbiased_statistic(
     gram: NDArray[np.float64],
     groups: tuple[NDArray[np.intp], ...],
 ) -> float:
-    """Evaluate Gretton et al.'s unequal-size unbiased MMD squared."""
-    first, second = groups
-    first_block = gram[np.ix_(first, first)]
-    second_block = gram[np.ix_(second, second)]
-    cross_block = gram[np.ix_(first, second)]
-    first_sum = float(np.sum(first_block) - np.trace(first_block))
-    second_sum = float(np.sum(second_block) - np.trace(second_block))
+    """Use the same pair reduction for observations and resampled labels."""
+    labels = np.empty((1, gram.shape[0]), dtype=np.intp)
+    for label, indices in enumerate(groups):
+        labels[0, indices] = label
     return float(
-        first_sum / (first.size * (first.size - 1.0))
-        + second_sum / (second.size * (second.size - 1.0))
-        - 2.0 * float(np.mean(cross_block, dtype=np.float64))
+        _mmd_unbiased_statistic_batch(gram, labels, (groups[0].size, groups[1].size))[0]
     )
 
 
@@ -547,23 +498,27 @@ def _mmd_unbiased_statistic_batch(
     labels: NDArray[np.intp],
     sizes: tuple[int, int],
 ) -> NDArray[np.float64]:
-    """Evaluate unequal-size unbiased MMD for a batch of labelings."""
-    first = labels == 0
-    second = ~first
-    diagonal = np.diag(gram)
-    first_sum = np.einsum("bi,ij,bj->b", first, gram, first, optimize=True) - np.einsum(
-        "bi,i->b", first, diagonal, optimize=True
+    """Sum unordered pairs identically, independent of resampling batch size.
+
+    A within-group pair appears twice in the ordered unbiased estimator;
+    a cross-group pair has weight -2/(nm). Omitting the diagonal before
+    summation preserves tiny kernels, and a fixed contiguous pair axis avoids
+    different BLAS reduction paths for the observed and simulated statistics.
+    """
+    left, right = np.triu_indices(gram.shape[0], k=1)
+    first_left = labels[:, left] == 0
+    first_right = labels[:, right] == 0
+    weights = np.where(
+        first_left & first_right,
+        2.0 / (sizes[0] * (sizes[0] - 1.0)),
+        np.where(
+            ~first_left & ~first_right,
+            2.0 / (sizes[1] * (sizes[1] - 1.0)),
+            -2.0 / (sizes[0] * sizes[1]),
+        ),
     )
-    second_sum = np.einsum(
-        "bi,ij,bj->b", second, gram, second, optimize=True
-    ) - np.einsum("bi,i->b", second, diagonal, optimize=True)
-    cross_sum = np.einsum("bi,ij,bj->b", first, gram, second, optimize=True)
-    return np.asarray(
-        first_sum / (sizes[0] * (sizes[0] - 1.0))
-        + second_sum / (sizes[1] * (sizes[1] - 1.0))
-        - 2.0 * cross_sum / (sizes[0] * sizes[1]),
-        dtype=np.float64,
-    )
+    weighted_pairs = np.ascontiguousarray(weights * gram[left, right])
+    return np.sum(weighted_pairs, axis=1, dtype=np.float64)
 
 
 def mmd_2samp(
@@ -595,8 +550,11 @@ def mmd_2samp(
     canonical = canonical_groups(groups)
     pooled, observed_groups = pooled_groups(canonical)
     gram, selected_kernel, bandwidth_mode, numeric_bandwidth = kernel_matrix(
-        distance_geometry(pooled), kernel=kernel, bandwidth=bandwidth
+        distance_geometry(pooled), kernel=kernel, bandwidth=bandwidth, offset="auto"
     )
+    # The unbiased estimator excludes self pairs. Remove them before any
+    # summation so their unit diagonal cannot erase tiny off-diagonal terms.
+    np.fill_diagonal(gram, 0.0)
     observed = _mmd_unbiased_statistic(gram, observed_groups)
     summary = calibrate_groups(
         observed=observed,

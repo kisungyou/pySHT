@@ -18,6 +18,7 @@ from scipy import integrate, optimize, special, stats
 
 from ._results import HypothesisTestResult
 from ._validation import validate_1d_sample, validate_real_scalar
+from .variance import _beta_log_tails
 
 __all__ = [
     "exact_lrt_2samp",
@@ -67,24 +68,23 @@ def _log_beta_lower(log_value: float, shape1: float, shape2: float) -> float:
     """Return a beta lower-tail log probability from log(x)."""
     if log_value >= 0.0:
         return 0.0
-    if log_value > -30.0:
-        probability = float(special.betainc(shape1, shape2, math.exp(log_value)))
-        if probability > 0.0:
-            return math.log(probability)
+    # Use the same positive-series/continued-fraction tail calculation as the
+    # F test. A hypergeometric correction may itself underflow for large shapes;
+    # omitting it can turn a vanishing probability into one. Reflect around 1/2
+    # without rounding exp(log_value) to one at the upper endpoint.
+    if log_value <= -math.log(2.0):
+        return _beta_log_tails(log_value, shape1, shape2)[0]
+    log_complement = math.log(-math.expm1(log_value))
+    return _beta_log_tails(log_complement, shape2, shape1)[1]
 
-    # I_x(a,b) = x**a 2F1(a,1-b;a+1;x) / (a B(a,b)).
-    # At x <= exp(-30), the hypergeometric factor is close to one but is
-    # retained when SciPy can evaluate it, avoiding an avoidable cutoff error
-    # for large beta shapes.
-    log_probability = (
-        shape1 * log_value - math.log(shape1) - float(special.betaln(shape1, shape2))
-    )
-    if log_value >= _LOG_SMALLEST:
-        value = math.exp(log_value)
-        correction = float(special.hyp2f1(shape1, 1.0 - shape2, shape1 + 1.0, value))
-        if math.isfinite(correction) and correction > 0.0:
-            log_probability += math.log(correction)
-    return min(0.0, log_probability)
+
+def _log_scale_ratio(scale: float, reference_scale: float) -> float:
+    """Retain relative accuracy near one and full range at either endpoint."""
+    ratio = scale / reference_scale
+    if np.finfo(np.float64).tiny <= ratio < math.inf:
+        return math.log(ratio)
+    # Subnormal ratios have already lost significant bits, even when nonzero.
+    return math.log(scale) - math.log(reference_scale)
 
 
 def _scaled_sample_moments(
@@ -118,13 +118,7 @@ def _log_centered_sum_squares(
     _, scaled_sum_squares = _scaled_sample_moments(scaled)
     if scaled_sum_squares <= 0.0 or not math.isfinite(scaled_sum_squares):
         raise ArithmeticError("the sample variance could not be evaluated")
-    scale_ratio = scale / reference_scale
-    if scale_ratio > 0.0:
-        log_scale_ratio = math.log(scale_ratio)
-    else:
-        # The ratio alone can underflow when the samples span more than the
-        # full exponent range, although both individual scales are finite.
-        log_scale_ratio = math.log(scale) - math.log(reference_scale)
+    log_scale_ratio = _log_scale_ratio(scale, reference_scale)
     return 2.0 * log_scale_ratio + math.log(scaled_sum_squares)
 
 
@@ -146,12 +140,7 @@ def _log_squared_mean_difference(
         scaled_difference = float(np.mean(differences / scale, dtype=np.float64))
         if scaled_difference == 0.0:
             return -math.inf
-        scale_ratio = scale / reference_scale
-        log_scale_ratio = (
-            math.log(scale_ratio)
-            if scale_ratio > 0.0
-            else math.log(scale) - math.log(reference_scale)
-        )
+        log_scale_ratio = _log_scale_ratio(scale, reference_scale)
         log_absolute_difference = log_scale_ratio + math.log(abs(scaled_difference))
     else:
         scale = max(float(np.max(np.abs(values))), abs(null_mean))
@@ -160,12 +149,7 @@ def _log_squared_mean_difference(
         )
         if scaled_difference == 0.0:
             return -math.inf
-        scale_ratio = scale / reference_scale
-        log_scale_ratio = (
-            math.log(scale_ratio)
-            if scale_ratio > 0.0
-            else math.log(scale) - math.log(reference_scale)
-        )
+        log_scale_ratio = _log_scale_ratio(scale, reference_scale)
         log_absolute_difference = log_scale_ratio + math.log(abs(scaled_difference))
     return 2.0 * log_absolute_difference
 

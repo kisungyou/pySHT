@@ -120,6 +120,21 @@ this preserves a representable doubled tail even when the single tail rounds
 to zero. Tail probabilities below half the smallest positive float still
 necessarily round to zero.
 
+## Confidence bounds at numerical endpoints
+
+One-sided intervals use the confidence coefficient itself when it is the
+smaller tail probability; they do not subtract a tiny coefficient from one.
+The chi-square and F quantiles are retained as logarithms until the final
+pivot inversion. This can preserve a finite bound even when the intermediate
+quantile would be zero or infinity in float64.
+
+Candidate inverse-distribution values are checked against the stable log
+tail. If that check fails, a bracketed solve in log-pivot coordinates supplies
+the inverse. Regression references include exact chi-square identities,
+the closed-form $F_{2,d}$ CDF, reciprocal F intervals, and confidence
+coefficients down to $10^{-320}$. These are numerical checks of the stated
+normal-theory interval, not changes to its statistical assumptions.
+
 ## Bartlett test
 
 For $k$ normal populations, the implementation uses the classical corrected

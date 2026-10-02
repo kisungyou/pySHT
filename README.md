@@ -11,10 +11,11 @@ validated successor to the R package
 [SHT](https://github.com/kisungyou/SHT); it does not treat legacy numerical
 output as a correctness oracle.
 
-> **Status:** this source tree contains release candidate **0.5.0rc1**.
-> Version **0.1.0** remains the latest stable
-> release. The 72-function API is fixed during 0.5 stabilization, except for
-> documented correctness fixes.
+> **Status:** this source tree follows development toward **0.5.0**, including
+> unreleased numerical corrections since **0.5.0rc1**. The documentation
+> website follows this development branch. Version **0.1.0** remains the latest
+> stable release. The 72-function API is fixed during 0.5 stabilization, except
+> for documented correctness fixes in the [changelog](CHANGELOG.md).
 
 Install the latest stable release from PyPI:
 

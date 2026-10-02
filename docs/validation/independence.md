@@ -57,6 +57,16 @@ The public dHSIC statistic is $n\widehat{\mathrm{dHSIC}}_n$. When $d=2$,
 this is $n$ times the public `hsic` value; consequently both functions have
 identical permutation ordering, exceedance count, and p-value.
 
+Kernel offsets $K-1$ are calculated with `expm1` so large bandwidths retain
+small deviations from the constant kernel. Two-block statistics use the
+centered offsets directly. For more blocks, the constant and linear terms in
+the three-expectation formula cancel analytically before accumulation. The
+remaining product terms are evaluated in linear time in the block count.
+Permutation ties use a relative tolerance, preserving ordering under positive
+rescaling without merging small distinct statistics into zero. Regression
+oracles evaluate the original formula at 70 digits for three and four blocks,
+and enumerate the two-block orbit at small statistic magnitudes.
+
 RBF and Laplacian kernels are characteristic. Each block has its own kernel
 and bandwidth metadata. A median bandwidth is computed from strictly positive
 within-block distances and frozen before permutation. `dhsic` requires

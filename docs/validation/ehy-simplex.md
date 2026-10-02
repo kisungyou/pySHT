@@ -36,6 +36,14 @@ documented `Generator.dirichlet` stream and is replayed through that public
 method rather than assumed from a gamma implementation. Corrected Monte Carlo
 $p=(b+1)/(B+1)$ and uncertainty fields are reported.
 
+Nearest-neighbor distances use scaled norms to preserve tiny separations.
+Calibration compares $\log T/\max(1,\alpha)$ after a largest-log-volume
+shift, preserving the selected tail without overflowing at extreme finite
+powers. The reported statistic is reconstructed separately and can be zero
+or infinite when it lies outside float64 range. Two-observation regressions
+check the exact ordering by pair spacing, including powers near the largest
+finite float64 value.
+
 An independent direct-distance formula verifies the Hausdorff-density factor
 and every first-$J$ term. Tests cover row and common component permutations,
 closed-boundary values, duplicates, both tails, stream replay, and the 9,999

@@ -267,6 +267,29 @@ class MomentNormalityTests(unittest.TestCase):
         actual = np.random.random(4)
         np.testing.assert_array_equal(actual, expected)
 
+    def test_identical_monte_carlo_samples_count_as_ties(self) -> None:
+        for function, seed in (
+            (jarque_bera, 35),
+            (adjusted_jarque_bera, 35),
+            (robust_jarque_bera, 1),
+        ):
+            with self.subTest(function=function.__name__):
+                sample = np.random.default_rng(seed).standard_normal(4)
+                null_samples = np.random.default_rng(seed).standard_normal((20, 4))
+                np.testing.assert_array_equal(sample, null_samples[0])
+                result = function(sample, n_resamples=20, rng=seed)
+                assert isinstance(result, ResamplingTestResult)
+                # The first draw is exactly the observed data; all other
+                # draws have smaller statistics. Separate scalar/batch
+                # arithmetic must not turn this exact tie into a rejection.
+                other_statistics = [
+                    function(row, calibration="asymptotic").statistic
+                    for row in null_samples[1:]
+                ]
+                self.assertLess(max(other_statistics), result.statistic)
+                self.assertEqual(result.exceedances, 1)
+                self.assertEqual(result.pvalue, 2.0 / 21.0)
+
     def test_adjusted_and_robust_monte_carlo_counts_match_literal_null(self) -> None:
         resamples = 131
         seed = 912

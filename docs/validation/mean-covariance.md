@@ -102,17 +102,20 @@ $$
 \ \xrightarrow{d}\ \chi^2_{p(p+3)/2}.
 $$
 
-The implementation requires $n>p$ and a positive-definite fitted covariance;
-it never substitutes a pseudoinverse. Eigenvalue log terms use `log1p` near
-one and `log` in the far lower tail, preserving both local accuracy and tiny
-positive eigenvalues. The fixed-data oracle computes the same likelihood
-directly in the original coordinates with solves and determinant ratios.
+The implementation requires $n>p$ and full centered column rank; it never
+substitutes a pseudoinverse. It checks rank on feature-equilibrated residuals
+using an observation-space SVD and a dimension-dependent rounding threshold.
+This avoids accepting exact linear dependence because a covariance
+eigensolver returns a small positive value in place of zero.
 
-If heterogeneous column units make the direct covariance overflow or
-underflow, a fallback normalizes each column before checking rank. It restores
-$\operatorname{tr}(S_n)+\|\bar Z\|^2$ and $\log|S_n|$ analytically, so a
-full-rank design spanning hundreds of decimal orders is not mistaken for a
-singular one. An independent log-determinant fixture covers this path.
+Residual variation is estimated independently of the hypothesized mean.
+The residual SVD and feature scales supply the sample log determinant, while
+a diagonally equilibrated null covariance supplies the trace and mean
+quadratic terms. This preserves full-rank samples with widely different
+feature units and prevents a distant null mean from erasing sample variation.
+Near the identity, eigenvalue contributions use `log1p` to retain local
+accuracy. Independent tests use original-coordinate likelihoods, determinant
+ratios, and exact dependent columns under every column permutation.
 
 This is a multivariate-normal, fixed-dimension limit. It is not a fallback for
 a singular or proportional high-dimensional design.

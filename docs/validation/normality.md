@@ -137,6 +137,11 @@ conditional Monte Carlo standard error, and a 95% Clopper--Pearson interval for
 the underlying tail probability. An integer `rng` seed replays the full
 calibration without touching NumPy's global random state. Literal seeded
 simulations independently reproduce the counts for JB, AJB, and RJB.
+The scalar observation and batched null calculations use the shared
+roundoff-aware upper-tail comparison. In particular, an identical seeded
+null draw is counted even if the two reduction paths differ in their last
+floating-point bits. Regression fixtures replay every draw independently for
+all three variants and verify the exceedance count and corrected p-value.
 
 The explicit `calibration="asymptotic"` option reports a chi-square
 approximation with two degrees of freedom. It has no advertised finite-sample

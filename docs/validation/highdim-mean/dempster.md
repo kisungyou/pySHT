@@ -18,9 +18,12 @@ it does not require an invertible sample covariance.
   and uses Dempster's approximate F law.
 - Both routines are invariant to a common nonzero scale; the two-sample
   routine is invariant to exchanging groups.
-- Null centering and shared two-sample anchoring happen before numerical
-  scaling. Tests at common locations up to `1e14` reproduce the attainable
-  result from the translated float64 observations.
+- One-sample residuals are anchored on the observations, with the null
+  displacement evaluated separately; two samples share an observation
+  anchor before numerical scaling. Tests at common locations up to `1e14`
+  reproduce the attainable result from the translated float64 observations,
+  and distant-null tests independently verify that residual traces remain
+  unchanged.
 - Singular or high-dimensional covariance estimates are allowed, but the
   estimated trace and squared-trace correction must be positive.
 - `tr(S)` and `tr(S²)` are evaluated through the smaller of the centered row

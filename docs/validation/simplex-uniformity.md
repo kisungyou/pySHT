@@ -48,6 +48,15 @@ asymmetry makes that coordinate system ill-conditioned, a bounded trust-region
 solve of the same score equations in $\log\alpha$ is used. The fallback has an
 analytic Jacobian and is accepted only after the original alpha-coordinate
 score meets the requested tolerance, up to a scale-aware floating-point floor.
+An absolute score is not a sufficient convergence criterion for concentrated
+samples: the full Newton correction must also be small relative to the
+parameters. When concentration exceeds binary64 score and likelihood
+resolution, an 80-digit standard-library Decimal calculation evaluates the
+same likelihood and score equations. Digamma, trigamma, and log-gamma use
+recurrence plus a Bernoulli asymptotic expansion; the fit verifies relative
+Newton corrections. Exact equality, rather than proximity to the barycenter,
+determines the unbounded symmetric boundary.
+
 `tolerance` and `max_iter` are public, deterministic controls. Failure to
 bracket, preserve positivity, or verify the score raises an exception rather
 than returning a partially optimized test.
@@ -122,3 +131,10 @@ Dirichlet parameter space.
 |---|---|
 | `uniformity(model="symmetric")` | `simplex.uniform(..., "LRTsym")` |
 | `uniformity(model="general")` | `simplex.uniform(..., "LRT")` |
+
+Concentrated two-component regression fixtures use exact dyadic inputs with
+spacings from $2^{-16}$ to $2^{-26}$. Their expected statistics come from
+independent 90-digit bisection of the scalar digamma score and direct log-gamma
+likelihoods. Three-component asymmetric fixtures additionally use an
+independent 85-digit multivariate score root. Both model choices, component
+reordering, and explicit iteration limits are checked.

@@ -140,6 +140,10 @@ null for all three variants. It uses the corrected
 $(b+1)/(B+1)$ p-value, counts upper-tail ties, reports Monte Carlo uncertainty,
 and accepts an isolated/replayable `rng`. A literal seeded simulation
 independently reproduces its statistic vector and exceedance count.
+The batched null path uses the same roundoff-aware upper-tail comparison as
+other resampling procedures. A regression with an identical observed and
+simulated matrix verifies that summation-order differences cannot exclude
+that draw from its own tail.
 
 `calibration="asymptotic"` uses the corrected correlated-square law for `q3`.
 The legacy $\chi^2_2$ calculation is not exposed because it is not the

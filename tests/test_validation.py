@@ -197,6 +197,25 @@ def test_covariance_eigensolver_failure_has_public_error(
         validate_covariance_matrix(np.eye(2), name="popcov")
 
 
+def test_covariance_numerical_rank_is_independent_of_coordinate_units() -> None:
+    # This integer Gram matrix has exact null vector (1, -8, 1), although
+    # floating-point equilibration and Cholesky can both report full rank.
+    singular = np.array([[17.0, 4.0, 15.0], [4.0, 1.0, 4.0], [15.0, 4.0, 17.0]])
+    np.testing.assert_array_equal(singular @ np.array([1, -8, 1]), np.zeros(3))
+    definite = singular + np.eye(3) * 0.1
+    for scales in (np.ones(3), np.array([1.0e-150, 1.0, 1.0e150])):
+        for permutation in ([0, 1, 2], [2, 0, 1], [1, 2, 0]):
+            scaled_singular = singular * scales[:, None] * scales[None, :]
+            scaled_definite = definite * scales[:, None] * scales[None, :]
+            bad = scaled_singular[np.ix_(permutation, permutation)]
+            good = scaled_definite[np.ix_(permutation, permutation)]
+            with pytest.raises(ValueError, match="numerically positive definite"):
+                validate_covariance_matrix(bad, name="popcov")
+            np.testing.assert_array_equal(
+                validate_covariance_matrix(good, name="popcov"), good
+            )
+
+
 def test_nonfinite_covariance_eigenvalues_are_rejected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

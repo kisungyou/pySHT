@@ -59,6 +59,8 @@ class DistanceGeometry:
 
     distances: NDArray[np.float64]
     log_scale: float
+    log_distances: NDArray[np.float64]
+    scale: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -436,39 +438,42 @@ def canonical_paired_row_order(
 
 
 def distance_geometry(values: NDArray[np.float64]) -> DistanceGeometry:
-    """Compute Euclidean distances after a safe common coordinate scaling."""
-    # Centering before scaling preserves small, representable differences on a
-    # huge common offset.  ``minimum / 2 + maximum / 2`` is an overflow-safe,
-    # row-order-invariant midpoint even when the feature range itself exceeds
-    # float64.  Subtracting a point inside [minimum, maximum] cannot overflow.
-    minimum = np.min(values, axis=0)
-    feature_maximum = np.max(values, axis=0)
-    midpoint = minimum / 2.0 + feature_maximum / 2.0
-    centered = values - midpoint
-    coordinate_scale = float(np.max(np.abs(centered)))
-    if coordinate_scale == 0.0:
-        return DistanceGeometry(
-            distances=np.zeros((values.shape[0], values.shape[0]), dtype=np.float64),
-            log_scale=-math.inf,
-        )
-    scaled = centered / coordinate_scale
+    """Subtract each pair before scaling, preserving small local spacings.
+
+    Log distances retain kernel information even when the ratio between the
+    smallest and largest distances lies outside the float64 exponent range.
+    """
     try:
-        distances = _core.pairwise_distances(scaled, scaled)
-    except OverflowError as exc:
-        raise ValueError("pairwise distances could not be represented") from exc
-    distance_maximum = float(np.max(distances))
-    if not math.isfinite(distance_maximum):
-        raise ValueError("pairwise distances could not be represented")
-    if distance_maximum == 0.0:
-        return DistanceGeometry(
-            distances=np.zeros_like(distances),
-            log_scale=-math.inf,
-        )
-    distances = np.asarray(distances / distance_maximum, dtype=np.float64, order="C")
-    return DistanceGeometry(
-        distances=distances,
-        log_scale=math.log(coordinate_scale) + math.log(distance_maximum),
-    )
+        raw = _core.pairwise_distances(values, values)
+    except OverflowError:
+        # Only overflowing pairs need the half-coordinate subtraction. Each
+        # finite difference is otherwise formed in the original coordinates.
+        logs = np.full((values.shape[0], values.shape[0]), -math.inf)
+        for row in range(values.shape[0] - 1):
+            with np.errstate(over="ignore", invalid="ignore"):
+                differences = values[row + 1 :] - values[row]
+            overflow = np.any(~np.isfinite(differences), axis=1)
+            differences[overflow] = (
+                values[row + 1 :][overflow] / 2.0 - values[row] / 2.0
+            )
+            scales = np.max(np.abs(differences), axis=1)
+            nonzero = scales > 0.0
+            current = np.full(scales.size, -math.inf)
+            norms = np.hypot.reduce(
+                differences[nonzero] / scales[nonzero, None], axis=1
+            )
+            current[nonzero] = np.log(scales[nonzero]) + np.log(norms)
+            current[overflow] += math.log(2.0)
+            logs[row, row + 1 :] = current
+            logs[row + 1 :, row] = current
+        log_scale = float(np.max(logs))
+        return DistanceGeometry(np.exp(logs - log_scale), log_scale, logs, math.inf)
+    maximum = float(np.max(raw))
+    with np.errstate(divide="ignore"):
+        logs = np.log(raw)
+    if maximum == 0.0:
+        return DistanceGeometry(raw, -math.inf, logs, 0.0)
+    return DistanceGeometry(raw / maximum, math.log(maximum), logs, maximum)
 
 
 def double_center(matrix: NDArray[np.float64]) -> NDArray[np.float64]:
@@ -484,6 +489,7 @@ def kernel_matrix(
     *,
     kernel: object,
     bandwidth: object,
+    offset: bool | Literal["auto"] = False,
 ) -> tuple[NDArray[np.float64], Kernel, str, float | None]:
     """Construct one supported characteristic kernel from fixed distances."""
     selected = validate_choice(
@@ -492,8 +498,8 @@ def kernel_matrix(
         choices=("rbf", "laplacian"),
     )
     distances = geometry.distances
-    upper = distances[np.triu_indices(distances.shape[0], k=1)]
-    positive = upper[upper > 0.0]
+    upper_logs = geometry.log_distances[np.triu_indices(distances.shape[0], k=1)]
+    positive_logs = np.sort(upper_logs[np.isfinite(upper_logs)])
 
     numeric_bandwidth: float | None
     if isinstance(bandwidth, str):
@@ -502,23 +508,24 @@ def kernel_matrix(
             name="bandwidth",
             choices=("median",),
         )
-        if positive.size == 0:
+        if positive_logs.size == 0:
             raise ValueError(
                 "median bandwidth requires at least two distinct observations"
             )
-        normalized_bandwidth = float(np.median(positive))
-        log_ratio = np.full_like(distances, -math.inf)
-        mask = distances > 0.0
-        log_ratio[mask] = np.log(distances[mask] / normalized_bandwidth)
+        middle = positive_logs.size // 2
+        log_bandwidth = float(positive_logs[middle])
+        if positive_logs.size % 2 == 0:
+            log_bandwidth = float(
+                np.logaddexp(positive_logs[middle - 1], log_bandwidth)
+            ) - math.log(2.0)
+        log_ratio = geometry.log_distances - log_bandwidth
         bandwidth_label = mode
         numeric_bandwidth = None
     else:
         value = validate_real_scalar(bandwidth, name="bandwidth")
         if value <= 0.0:
             raise ValueError("bandwidth must be greater than 0")
-        log_ratio = np.full_like(distances, -math.inf)
-        mask = distances > 0.0
-        log_ratio[mask] = np.log(distances[mask]) + geometry.log_scale - math.log(value)
+        log_ratio = geometry.log_distances - math.log(value)
         bandwidth_label = "explicit"
         numeric_bandwidth = value
 
@@ -527,14 +534,20 @@ def kernel_matrix(
         too_large = log_ratio > math.log(np.finfo(np.float64).max)
         ratio[too_large] = math.inf
         ratio[~too_large] = np.exp(log_ratio[~too_large])
-        gram = np.exp(-ratio)
+        exponent = -ratio
     else:
         squared_ratio = np.empty_like(log_ratio)
         too_large = log_ratio > 0.5 * math.log(np.finfo(np.float64).max)
         squared_ratio[too_large] = math.inf
         squared_ratio[~too_large] = np.exp(2.0 * log_ratio[~too_large])
-        gram = np.exp(-0.5 * squared_ratio)
-    np.fill_diagonal(gram, 1.0)
+        exponent = -0.5 * squared_ratio
+    # MMD needs offsets near the constant-one kernel, but unshifted entries
+    # when tiny off-diagonal kernels carry the entire statistic.
+    shifted = offset is True or (
+        offset == "auto" and float(np.min(exponent)) >= -math.log(2.0)
+    )
+    gram = np.expm1(exponent) if shifted else np.exp(exponent)
+    np.fill_diagonal(gram, 0.0 if shifted else 1.0)
     return (
         np.asarray(gram, dtype=np.float64),
         cast(Kernel, selected),
@@ -552,8 +565,14 @@ def validate_calibration(value: object) -> Calibration:
     )
 
 
-def at_least_as_extreme(candidate: float, observed: float) -> bool:
-    """Include upper-tail numerical ties without broad absolute tolerances."""
+def at_least_as_extreme(
+    candidate: float,
+    observed: float,
+    *,
+    absolute_tolerance: float = 0.0,
+    relative_tolerance: float = _TIE_RTOL,
+) -> bool:
+    """Use relative ties unless a method supplies its own rounding bound."""
     if math.isnan(candidate) or math.isnan(observed):
         raise ValueError("resampling statistics must not be NaN")
     if observed == math.inf:
@@ -562,10 +581,12 @@ def at_least_as_extreme(candidate: float, observed: float) -> bool:
         return True
     if math.isinf(candidate):
         return candidate > observed
-    # Kernel V-statistics can subtract terms of order one to produce a value
-    # close to zero.  Scaling by at least one therefore reflects the arithmetic
-    # error of the terms being combined, while remaining near machine precision.
-    tolerance = _TIE_RTOL * max(1.0, abs(candidate), abs(observed))
+    # The default relative rule preserves ordering under positive rescaling.
+    # A method may supply a forward-error allowance for unavoidable subtraction
+    # of positive quantities; kernel calculations need no absolute floor.
+    tolerance = absolute_tolerance + relative_tolerance * max(
+        abs(candidate), abs(observed)
+    )
     return bool(candidate >= observed - tolerance)
 
 
@@ -602,8 +623,10 @@ def calibrate_groups(
     calibration: object,
     n_resamples: object,
     rng: int | np.integer | np.random.Generator | None,
+    absolute_tolerance: float = 0.0,
+    relative_tolerance: float = _TIE_RTOL,
 ) -> CalibrationSummary:
-    """Calibrate a fixed-size group-label statistic."""
+    """Calibrate labels with optional method-specific forward-error bounds."""
     selected = validate_calibration(calibration)
     budget = validate_positive_integer(n_resamples, name="n_resamples")
     if math.isnan(observed):
@@ -620,7 +643,14 @@ def calibrate_groups(
     population = tuple(range(sum(sizes)))
     if use_exact and batch_statistic is None:
         for allocation in _group_allocations(population, sizes):
-            exceedances += int(at_least_as_extreme(statistic(allocation), observed))
+            exceedances += int(
+                at_least_as_extreme(
+                    statistic(allocation),
+                    observed,
+                    absolute_tolerance=absolute_tolerance,
+                    relative_tolerance=relative_tolerance,
+                )
+            )
         return CalibrationSummary(
             pvalue=exact_pvalue(exceedances, total),
             n_resamples=total,
@@ -686,9 +716,8 @@ def calibrate_groups(
             finite = np.isfinite(values)
             exceedances += int(np.count_nonzero(values == math.inf))
             finite_values = values[finite]
-            tolerance = _TIE_RTOL * np.maximum.reduce(
+            tolerance = absolute_tolerance + relative_tolerance * np.maximum.reduce(
                 (
-                    np.ones_like(finite_values),
                     np.abs(finite_values),
                     np.full_like(finite_values, abs(observed)),
                 )
@@ -827,7 +856,6 @@ def calibrate_blocks(
             finite_values = values[finite]
             tolerance = _TIE_RTOL * np.maximum.reduce(
                 (
-                    np.ones_like(finite_values),
                     np.abs(finite_values),
                     np.full_like(finite_values, abs(observed)),
                 )

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 import operator
+from decimal import Decimal, localcontext
 from typing import Final
 
 import numpy as np
@@ -631,21 +632,99 @@ def _clx_entrywise_variance(
     return theta
 
 
+def _clx_precise_ratios(
+    first: NDArray[np.float64],
+    second: NDArray[np.float64],
+    entries: NDArray[np.intp],
+) -> list[tuple[int, int, float]]:
+    """Resolve cancellation-prone entries from the original input floats.
+
+    Ordinary entries stay in the vectorized calculation. Decimal arithmetic
+    is portable even on platforms where longdouble has no extra precision;
+    neither rounded covariances nor rounded centered products are its inputs.
+    """
+    result = []
+    with localcontext() as context:
+        context.prec = 80
+        zero = Decimal(0)
+        centered_columns: list[dict[int, list[Decimal]]] = [{}, {}]
+        for i, j in entries:
+            moments: list[tuple[Decimal, Decimal]] = []
+            for group_index, sample in enumerate((first, second)):
+                columns = centered_columns[group_index]
+                for column in (int(i), int(j)):
+                    if column not in columns:
+                        values = [
+                            Decimal.from_float(float(v)) for v in sample[:, column]
+                        ]
+                        anchor = values[0]
+                        shifted = [v - anchor for v in values]
+                        mean = sum(shifted, zero) / len(shifted)
+                        columns[column] = [v - mean for v in shifted]
+                products = [
+                    a * b for a, b in zip(columns[int(i)], columns[int(j)], strict=True)
+                ]
+                covariance = sum(products, zero) / len(products)
+                variance = sum(((v - covariance) ** 2 for v in products), zero) / len(
+                    products
+                )
+                moments.append((covariance, variance / len(products)))
+            denominator = moments[0][1] + moments[1][1]
+            if denominator <= 0:
+                raise ValueError(
+                    "every CLX entrywise variance estimate must be positive"
+                )
+            ratio = (moments[0][0] - moments[1][0]) ** 2 / denominator
+            result.append((int(i), int(j), float(ratio)))
+    return result
+
+
 def clx_2samp(x: ArrayLike, y: ArrayLike) -> HypothesisTestResult:
     """Perform the Cai--Liu--Xia maximum covariance test (2013)."""
     first, second = _validate_pair(x, y)
     feature_count = first.shape[1]
     if feature_count < 2:
         raise ValueError("clx_2samp requires at least two features")
-    (first_centered, second_centered), _ = _center_together(first, second)
+    # Each entrywise ratio is invariant to a common change of each feature's
+    # units: its numerator and denominator both acquire s_i**2 * s_j**2.
+    # Equilibrate features separately to keep their fourth-order products
+    # representable even when different coordinates use disparate units.
+    first_centered, second_centered = _equilibrated_centered_groups((first, second))
     covariance1 = first_centered.T @ first_centered / first.shape[0]
     covariance2 = second_centered.T @ second_centered / second.shape[0]
     theta1 = _clx_entrywise_variance(first_centered, covariance1)
     theta2 = _clx_entrywise_variance(second_centered, covariance2)
     denominator = theta1 / first.shape[0] + theta2 / second.shape[0]
-    if np.any(~np.isfinite(denominator)) or np.any(denominator <= 0.0):
+    if np.any(~np.isfinite(denominator)):
         raise ValueError("every CLX entrywise variance estimate must be positive")
-    ratios = (covariance1 - covariance2) ** 2 / denominator
+    difference = covariance1 - covariance2
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratios = difference**2 / denominator
+        # Estimate how rounding the two covariances and centered products can
+        # affect their ratio. Cancellation in a tiny numerator is harmless
+        # when its denominator is ordinary; it need not trigger slow work.
+        roundoff = (
+            32.0
+            * np.finfo(np.float64).eps
+            * np.maximum(np.abs(covariance1), np.abs(covariance2))
+        )
+        uncertainty = (
+            2.0 * np.abs(difference) * roundoff + roundoff**2
+        ) / denominator + ratios * 4.0 * roundoff / np.sqrt(theta1 + theta2)
+    uncertain = (denominator <= 0.0) | (uncertainty > 1.0e-12 * np.maximum(1.0, ratios))
+    if np.any(uncertain):
+        # Equal observation multisets have exactly equal covariances. Avoid
+        # an all-entry high-precision calculation merely to establish zero.
+        identical = first.shape == second.shape and (
+            np.array_equal(first, second)
+            or np.array_equal(first[np.lexsort(first.T)], second[np.lexsort(second.T)])
+        )
+        if identical:
+            ratios.fill(0.0)
+            uncertain = denominator <= 0.0
+        entries = np.argwhere(np.triu(uncertain))
+        for i, j, ratio in _clx_precise_ratios(first, second, entries):
+            ratios[i, j] = ratios[j, i] = ratio
     statistic = float(np.max(ratios))
     return HypothesisTestResult(
         statistic=statistic,
@@ -918,7 +997,11 @@ def _equilibrated_centered_groups(
             )
     scales = np.maximum.reduce([np.max(np.abs(group), axis=0) for group in shifted])
     scales[scales == 0.0] = 1.0
-    scaled = tuple(group / scales for group in shifted)
+    # Binary scaling adds no rounding to normally represented differences and
+    # avoids constructing an overflowing power of two at the upper endpoint.
+    # Every nonconstant feature's maximum magnitude lies in [0.5, 1).
+    _, exponents = np.frexp(scales)
+    scaled = tuple(np.ldexp(group, -exponents) for group in shifted)
     return tuple(group - np.mean(group, axis=0) for group in scaled)
 
 

@@ -31,6 +31,11 @@ One shared original-coordinate feature anchor is removed from all groups
 before constructing the transformation. This changes neither the Scheffé
 blocks nor their units and prevents a huge common location from driving the
 working scale.
+The Hotelling branch then scales each feature separately before the Scheffé
+transformation; the Bai--Saranadasa branch retains a common scale because its
+statistic is not invariant to arbitrary feature-wise rescaling. An independent
+high-precision Scheffé and covariance-inverse calculation checks the Hotelling
+branch for feature units spanning $10^{-200}$ to $10^{200}$.
 
 ## Null calibration gate for the default base test
 

@@ -20,8 +20,11 @@ asymptotic and is intended for increasing sample size and dimension.
   $n$ uses $2(n-1)n/[(n-2)(n+1)]$.
 - Common scaling and orthogonal feature transformations leave the result
   unchanged; exchanging the two samples leaves `bs_2samp` unchanged.
-- Null centering and shared two-sample anchoring precede numerical scaling;
-  large-location regressions include `1e8` and `1e14`.
+- One-sample residuals are anchored on the observations independently of the
+  null displacement, and two samples share an observation anchor before
+  numerical scaling. Large-location regressions include `1e8` and `1e14`;
+  distant-null regressions compare the retained covariance correction with a
+  literal dense calculation.
 - A nonpositive trace-variance estimate is rejected rather than clipped.
 - Covariance traces are evaluated from whichever exact row- or feature-Gram
   identity has the lower product cost, including the cross-group pooled

@@ -6,6 +6,8 @@ import inspect
 import math
 import unittest
 from dataclasses import FrozenInstanceError
+from decimal import Decimal, localcontext
+from unittest.mock import patch
 
 import numpy as np
 from numpy.typing import NDArray
@@ -28,6 +30,40 @@ fisher_1samp = covariance._fisher_1samp
 
 def _center(values: NDArray[np.float64]) -> NDArray[np.float64]:
     return values - np.mean(values, axis=0)
+
+
+def _literal_clx_decimal_statistic(
+    first: NDArray[np.float64], second: NDArray[np.float64]
+) -> float:
+    """Evaluate the paper's entrywise formulas on the exact input floats."""
+    with localcontext() as context:
+        context.prec = 90
+        groups = []
+        for sample in (first, second):
+            rows = [
+                [Decimal.from_float(float(value)) for value in row] for row in sample
+            ]
+            n = len(rows)
+            means = [sum(row[j] for row in rows) / n for j in range(sample.shape[1])]
+            centered = [
+                [value - mean for value, mean in zip(row, means, strict=True)]
+                for row in rows
+            ]
+            entries = {}
+            for i in range(sample.shape[1]):
+                for j in range(i, sample.shape[1]):
+                    products = [row[i] * row[j] for row in centered]
+                    sigma = sum(products) / n
+                    theta = sum((product - sigma) ** 2 for product in products) / n
+                    entries[i, j] = (sigma, theta / n)
+            groups.append(entries)
+        return float(
+            max(
+                (groups[0][key][0] - groups[1][key][0]) ** 2
+                / (groups[0][key][1] + groups[1][key][1])
+                for key in groups[0]
+            )
+        )
 
 
 def _literal_lc_a(values: NDArray[np.float64]) -> float:
@@ -493,31 +529,54 @@ class TestCaiLiuXia(CovarianceFixtures):
 
         first = sample(100, 1.0e-9)
         second = sample(120, 1.2e-9)
-        (first_centered, second_centered), _ = covariance._center_together(
-            first, second
-        )
-        covariance1 = first_centered.T @ first_centered / len(first)
-        covariance2 = second_centered.T @ second_centered / len(second)
-        theta1 = np.mean(
-            (first_centered[:, :, None] * first_centered[:, None, :] - covariance1)
-            ** 2,
-            axis=0,
-        )
-        theta2 = np.mean(
-            (second_centered[:, :, None] * second_centered[:, None, :] - covariance2)
-            ** 2,
-            axis=0,
-        )
-        expected = float(
-            np.max(
-                (covariance1 - covariance2) ** 2
-                / (theta1 / len(first) + theta2 / len(second))
-            )
-        )
+        # The covariance difference itself loses relative precision here.
+        # Its fallback must start with the original inputs, not the already
+        # rounded products or covariances from the ordinary calculation.
+        for scale in (np.ones(3), np.array([1.0e-250, 1.0, 1.0e250])):
+            for x, y in (
+                (first * scale, second * scale),
+                (second * scale, first * scale),
+            ):
+                expected = _literal_clx_decimal_statistic(x, y)
+                actual = clx_2samp(x, y)
+                np.testing.assert_allclose(actual.statistic, expected, rtol=2e-13)
 
-        actual = clx_2samp(first, second)
+    def test_equal_observation_multisets_do_not_require_decimal_entries(self) -> None:
+        generator = np.random.default_rng(61)
+        ordinary = generator.normal(size=(100, 30))
+        signs = np.resize(np.array([-1.0, 1.0]), 100)
+        nearly_deterministic = signs[:, None] + 1.0e-9 * ordinary
+        for first in (ordinary, nearly_deterministic):
+            for second in (first, first[::-1]):
+                with self.subTest(nearly_deterministic=first is nearly_deterministic):
+                    with patch.object(
+                        covariance,
+                        "_clx_precise_ratios",
+                        wraps=covariance._clx_precise_ratios,
+                    ) as precise:
+                        actual = clx_2samp(first, second)
+                    self.assertAlmostEqual(actual.statistic, 0.0, delta=1.0e-24)
+                    if precise.called:
+                        self.assertEqual(precise.call_args.args[2].size, 0)
 
-        np.testing.assert_allclose(actual.statistic, expected, rtol=2e-13)
+    def test_disparate_feature_units_preserve_the_literal_clx_statistic(self) -> None:
+        generator = np.random.default_rng(31)
+        first = generator.normal(size=(100, 3))
+        second = generator.normal(size=(120, 3))
+        second[:, 2] *= 3.0
+        baseline = clx_2samp(first, second)
+        scales = (
+            np.array([1.0, 1.0, 1.0e-80]),
+            np.array([1.0, 1.0, 1.0e-81]),
+            np.array([1.0e-250, 1.0, 1.0e250]),
+        )
+        for scale in scales:
+            with self.subTest(scale=scale):
+                x, y = first * scale, second * scale
+                expected = _literal_clx_decimal_statistic(x, y)
+                actual = clx_2samp(x, y)
+                np.testing.assert_allclose(actual.statistic, expected, rtol=2e-14)
+                np.testing.assert_allclose(actual.pvalue, baseline.pvalue, rtol=5e-14)
 
     def test_group_exchange_translation_and_scale_invariance(self) -> None:
         actual = clx_2samp(self.x, self.y)
